@@ -1,0 +1,4 @@
+{
+    "terminal.integrated.defaultProfile.windows": "Zephyr IDE Terminal",
+    "cmake.configureOnOpen": false
+}

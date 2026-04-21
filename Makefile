@@ -1,5 +1,5 @@
 # ============================================================
-# STM32F4 Zephyr Workspace - Makefile
+# ESP32C6 Zephyr Workspace - Makefile
 # Platform-independent: Windows, Linux, macOS
 #
 # Select the application to build below, then:
@@ -11,7 +11,13 @@
 # ============================================================
 
 # --- Select application to build (uncomment one) ---
-COMPILE_DIR ?= applications/BME688
+#COMPILE_DIR ?= applications/BME688
+#COMPILE_DIR ?= applications/LED_Blink
+#COMPILE_DIR ?= applications/MQTT_Publisher
+#COMPILE_DIR ?= applications/HTTP_Server
+#COMPILE_DIR ?= applications/HTTPS_Server
+#COMPILE_DIR ?= applications/HTTP_Client
+COMPILE_DIR ?= applications/blink_LED
 
 BOARD     ?= esp32c6_devkitc/esp32c6/hpcore
 BUILD_DIR ?= $(COMPILE_DIR)/build

@@ -1,0 +1,92 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // Reads COMPILE_DIR + BOARD from the Makefile and writes
+            // "zephyr.*" settings into settings.json so that the single
+            // launch.json debug config always targets the right app/board.
+            "label": "gen-debug-context",
+            "type": "shell",
+            "command": "make _gen-debug-context",
+            "options": { "cwd": "${workspaceFolder}" },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true,
+                "showReuseMessage": false
+            },
+            "problemMatcher": []
+        },
+        {
+            // Incremental build of the active app.  Runs make build which
+            // uses the COMPILE_DIR/BOARD from the Makefile, --pristine=auto
+            // handles board switches automatically.
+            "label": "build",
+            "type": "shell",
+            "command": "make build",
+            "group": { "kind": "build", "isDefault": true },
+            "options": { "cwd": "${workspaceFolder}" },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": false,
+                "showReuseMessage": false
+            },
+            "problemMatcher": {
+                "owner": "gcc",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+                    "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+                }
+            }
+        },
+        {
+            // Clean and rebuild the active app before debug.
+            // This maps directly to the Makefile `debug` target.
+            "label": "debug",
+            "type": "shell",
+            "command": "make debug",
+            "options": { "cwd": "${workspaceFolder}" },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": false,
+                "showReuseMessage": false
+            },
+            "problemMatcher": {
+                "owner": "gcc",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+                    "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+                }
+            }
+        },
+        {
+            // Flash the freshly built firmware via esptool (west flash).
+            // Must run after the debug build so the binary is up to date.
+            "label": "flash",
+            "type": "shell",
+            "command": "make flash",
+            "options": { "cwd": "${workspaceFolder}" },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": false,
+                "showReuseMessage": false
+            },
+            "problemMatcher": []
+        },
+        {
+            // Sequence run before every F5 debug session:
+            //   1. gen-debug-context  — update settings.json from Makefile
+            //   2. debug              — clean + rebuild from Makefile
+            //   3. flash              — flash via esptool so GDB just attaches
+            "label": "debug-prep",
+            "dependsOrder": "sequence",
+            "dependsOn": ["gen-debug-context", "debug", "flash"],
+            "problemMatcher": []
+        }
+    ]
+}

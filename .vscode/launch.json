@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug: Active App (from Makefile)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "servertype": "openocd",
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "debug-prep",
+      "executable": "${workspaceFolder}/${config:zephyr.compileDir}/build/zephyr/zephyr.elf",
+      "configFiles": [
+        "${workspaceFolder}/external/zephyr/boards/${config:zephyr.openocdBoardPath}",
+        "${workspaceFolder}/.vscode/openocd_fixup.tcl"
+      ],
+      "gdbPath": "${userHome}/.zephyr_ide/toolchains/${config:zephyr.sdkVersion}/${config:zephyr.gdbArch}/bin/${config:zephyr.gdbArch}-gdb",
+      "svdFile": "",
+      "loadFiles": [],
+      "hardwareBreakpoints": { "enabled": true, "limit": 4 },
+      "overrideLaunchCommands": [
+        "monitor reset halt",
+        "monitor esp appimage_offset 0x0"
+      ],
+      "runToEntryPoint": "main",
+      "showDevDebugOutput": "raw"
+    }
+  ]
+}

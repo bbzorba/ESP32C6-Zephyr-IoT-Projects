@@ -17,7 +17,9 @@
 #COMPILE_DIR ?= applications/HTTP_Server
 #COMPILE_DIR ?= applications/HTTPS_Server
 #COMPILE_DIR ?= applications/HTTP_Client
-COMPILE_DIR ?= applications/blink_LED
+#COMPILE_DIR ?= applications/blink_LED
+COMPILE_DIR ?= applications/threaded_blink_LEDs
+
 
 BOARD     ?= esp32c6_devkitc/esp32c6/hpcore
 BUILD_DIR ?= $(COMPILE_DIR)/build

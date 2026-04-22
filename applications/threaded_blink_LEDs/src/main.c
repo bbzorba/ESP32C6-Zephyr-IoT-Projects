@@ -16,8 +16,10 @@ static const struct device *const strip = DEVICE_DT_GET(STRIP_NODE);
 static struct led_rgb pixels[STRIP_NUM_PIXELS];
 
 /* White at low brightness — WS2812 is very bright at full intensity */
-static const struct led_rgb on_color  = { .r = 0x10, .g = 0x10, .b = 0x10 };
-static const struct led_rgb off_color = { .r = 0x00, .g = 0x00, .b = 0x00 };
+static const struct led_rgb red_on  = { .r = 0x10, .g = 0x00, .b = 0x00 };
+static const struct led_rgb blue_on = { .r = 0x00, .g = 0x00, .b = 0x10 };
+static const struct led_rgb green_on = { .r = 0x00, .g = 0x10, .b = 0x00 };
+
 
 int main(void)
 {
@@ -29,10 +31,19 @@ int main(void)
 	}
 
 	while (1) {
-		led_state = !led_state;
-		pixels[0] = led_state ? on_color : off_color;
+		pixels[0] = red_on;
 		led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
-		printf("LED state: %s\n", led_state ? "ON" : "OFF");
+		printf("RED LED ON\n");
+		k_msleep(SLEEP_TIME_MS);
+
+		pixels[0] = blue_on;
+		led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+		printf("BLUE LED ON\n");
+		k_msleep(SLEEP_TIME_MS);
+
+		pixels[0] = green_on;
+		led_strip_update_rgb(strip, pixels, STRIP_NUM_PIXELS);
+		printf("GREEN LED ON\n");
 		k_msleep(SLEEP_TIME_MS);
 	}
 	return 0;

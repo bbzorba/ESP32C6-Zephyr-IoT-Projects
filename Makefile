@@ -28,15 +28,17 @@ ZEPHYR_REQS := external/zephyr/scripts/requirements.txt
 # Python from the workspace virtual environment (platform-detected)
 ifeq ($(OS),Windows_NT)
     PYTHON := .venv/Scripts/python.exe
+	PYTHON_CMD := .venv\Scripts\python.exe
     VENV_MARKER := .venv/Scripts/python.exe
 else
     PYTHON := .venv/bin/python
+	PYTHON_CMD := $(PYTHON)
     VENV_MARKER := .venv/bin/python
 endif
 DEPS_MARKER := .venv/.deps-ready
 
 # Use a west launcher with git revision compatibility fallbacks
-WEST := $(PYTHON) tools/west_compat.py
+WEST := $(PYTHON_CMD) tools/west_compat.py
 
 # ============================================================
 .DEFAULT_GOAL := build
@@ -60,19 +62,19 @@ help:
 # Bootstrap: create venv, install west, init workspace, fetch zephyr, install deps
 $(VENV_MARKER):
 	python -m venv .venv
-	$(PYTHON) -m pip install --upgrade pip
+	$(PYTHON_CMD) -m pip install --upgrade pip
 
 $(DEPS_MARKER): $(VENV_MARKER)
-	$(PYTHON) -m pip install --upgrade pip
-	$(PYTHON) -m pip install --upgrade west
-	$(PYTHON) -m pip install -r $(ZEPHYR_REQS)
-	$(PYTHON) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
+	$(PYTHON_CMD) -m pip install --upgrade pip
+	$(PYTHON_CMD) -m pip install --upgrade west
+	$(PYTHON_CMD) -m pip install -r $(ZEPHYR_REQS)
+	$(PYTHON_CMD) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
 
 setup: $(DEPS_MARKER)
 	-$(WEST) init -l manifest-local
 	$(WEST) update --fetch always
-	$(PYTHON) -m pip install -r $(ZEPHYR_REQS)
-	$(PYTHON) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
+	$(PYTHON_CMD) -m pip install -r $(ZEPHYR_REQS)
+	$(PYTHON_CMD) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
 
 build: $(DEPS_MARKER)
 	$(WEST) build -b $(BOARD) $(COMPILE_DIR) -d $(BUILD_DIR) --pristine=auto
@@ -89,11 +91,11 @@ endif
 	@echo Cleaned: $(BUILD_DIR)
 
 update:
-	$(PYTHON) -m pip install --upgrade pip
-	$(PYTHON) -m pip install --upgrade west
+	$(PYTHON_CMD) -m pip install --upgrade pip
+	$(PYTHON_CMD) -m pip install --upgrade west
 	$(WEST) update --fetch always
-	$(PYTHON) -m pip install -r $(ZEPHYR_REQS)
-	$(PYTHON) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
+	$(PYTHON_CMD) -m pip install -r $(ZEPHYR_REQS)
+	$(PYTHON_CMD) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
 
 debug: clean build
 	@echo ""
@@ -112,4 +114,4 @@ build-flash: build flash
 flashmonitor-auto: build flash monitor
 
 _gen-debug-context:
-	$(PYTHON) .vscode/gen_debug_context.py
+	$(PYTHON_CMD) .vscode/gen_debug_context.py

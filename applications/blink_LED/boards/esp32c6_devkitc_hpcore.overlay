@@ -1,19 +1,20 @@
 /*
  * Board overlay for ESP32-C6-DevKitC HP Core
  *
- * Defines led0–led3 aliases required by the BME688 application.
+ * GPIO8 onboard LED is a WS2812B RGB LED driven via I2S — NOT a plain GPIO.
+ * It is configured here using the worldsemi,ws2812-i2s driver.
  *
- * led0 → GPIO8  (onboard LED pin; WS2812 on DevKitC-1 v1.2, plain LED on v1.0)
- * led1 → GPIO4  (external LED, active-high)
- * led2 → GPIO5  (external LED, active-high)
- * led3 → GPIO10 (external LED, active-high)
- *
- * The button alias sw0 is already provided by the board DTS (GPIO9, BOOT key).
+ * led-strip → WS2812B on GPIO8  (onboard RGB LED, I2S driven)
+ * led1      → GPIO4  (external plain LED, active-high)
+ * led2      → GPIO5  (external plain LED, active-high)
+ * led3      → GPIO10 (external plain LED, active-high)
  */
+
+#include <zephyr/dt-bindings/led/led.h>
 
 / {
 	aliases {
-		led0 = &led0;
+		led-strip = &led_strip;
 		led1 = &led1;
 		led2 = &led2;
 		led3 = &led3;
@@ -21,11 +22,6 @@
 
 	leds {
 		compatible = "gpio-leds";
-
-		led0: led_0 {
-			gpios = <&gpio0 8 GPIO_ACTIVE_HIGH>;
-			label = "LED 0";
-		};
 
 		led1: led_1 {
 			gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
@@ -42,4 +38,34 @@
 			label = "LED 3";
 		};
 	};
+};
+
+/* Override I2S pinctrl: only GPIO8 as data output (WS2812 doesn't need CLK/WS) */
+&i2s_default {
+	group1 {
+		pinmux = <I2S_O_SD_GPIO8>;
+	};
+};
+
+/* WS2812B RGB LED on GPIO8, driven via I2S + DMA */
+i2s_led: &i2s {
+	status = "okay";
+
+	dmas = <&dma 3>;
+	dma-names = "tx";
+
+	led_strip: ws2812@0 {
+		compatible = "worldsemi,ws2812-i2s";
+
+		reg = <0>;
+		chain-length = <1>;
+		color-mapping = <LED_COLOR_ID_GREEN
+				 LED_COLOR_ID_RED
+				 LED_COLOR_ID_BLUE>;
+		reset-delay = <500>;
+	};
+};
+
+&dma {
+	status = "okay";
 };

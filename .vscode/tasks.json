@@ -81,11 +81,21 @@
         {
             // Sequence run before every F5 debug session:
             //   1. gen-debug-context  — update settings.json from Makefile
-            //   2. debug              — clean + rebuild from Makefile
-            //   3. flash              — flash via esptool so GDB just attaches
+            //   2. build              — incremental build (fast; --pristine=auto
+            //                          handles board/config changes automatically)
+            //
+            // Flash is intentionally NOT part of this sequence.
+            // After 'make flash' the chip resets and USB JTAG takes ~3 s to
+            // re-enumerate.  Running OpenOCD immediately after flash causes
+            // "GDB Server Quit Unexpectedly" because the device isn't ready.
+            //
+            // Workflow:
+            //   1. Run the "flash" task (Ctrl+Shift+P → Tasks: Run Task → flash)
+            //      and wait ~5 s for the device to re-enumerate.
+            //   2. Press F5 — this task does an incremental build then attaches.
             "label": "debug-prep",
             "dependsOrder": "sequence",
-            "dependsOn": ["gen-debug-context", "debug", "flash"],
+            "dependsOn": ["gen-debug-context", "build"],
             "problemMatcher": []
         }
     ]

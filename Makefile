@@ -23,6 +23,7 @@ BOARD     ?= esp32c6_devkitc/esp32c6/hpcore
 BUILD_DIR ?= $(COMPILE_DIR)/build
 BAUD      ?= 115200
 PORT      ?=
+ZEPHYR_REQS := external/zephyr/scripts/requirements.txt
 
 # Python from the workspace virtual environment (platform-detected)
 ifeq ($(OS),Windows_NT)
@@ -32,6 +33,10 @@ else
     PYTHON := .venv/bin/python
     VENV_MARKER := .venv/bin/python
 endif
+DEPS_MARKER := .venv/.deps-ready
+
+# Use a west launcher with git revision compatibility fallbacks
+WEST := $(PYTHON) tools/west_compat.py
 
 # ============================================================
 .DEFAULT_GOAL := build
@@ -56,22 +61,28 @@ help:
 $(VENV_MARKER):
 	python -m venv .venv
 	$(PYTHON) -m pip install --upgrade pip
-	$(PYTHON) -m pip install west
-	-$(PYTHON) -m west init -l manifest-local
-	$(PYTHON) -m west update
-	$(PYTHON) -m pip install -r requirements.txt
 
-setup: $(VENV_MARKER)
+$(DEPS_MARKER): $(VENV_MARKER)
+	$(PYTHON) -m pip install --upgrade pip
+	$(PYTHON) -m pip install --upgrade west
+	$(PYTHON) -m pip install -r $(ZEPHYR_REQS)
+	$(PYTHON) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
 
-build: $(VENV_MARKER)
-	$(PYTHON) -m west build -b $(BOARD) $(COMPILE_DIR) -d $(BUILD_DIR) --pristine=auto
+setup: $(DEPS_MARKER)
+	-$(WEST) init -l manifest-local
+	$(WEST) update --fetch always
+	$(PYTHON) -m pip install -r $(ZEPHYR_REQS)
+	$(PYTHON) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
+
+build: $(DEPS_MARKER)
+	$(WEST) build -b $(BOARD) $(COMPILE_DIR) -d $(BUILD_DIR) --pristine=auto
 
 flash:
-	$(PYTHON) -m west flash -d $(BUILD_DIR)
+	$(WEST) flash -d $(BUILD_DIR)
 
 clean:
 ifeq ($(OS),Windows_NT)
-	-@rmdir /s /q "$(subst /,\,$(BUILD_DIR))" 2>nul
+	powershell -NoProfile -ExecutionPolicy Bypass -Command "if (Test-Path '$(subst /,\,$(BUILD_DIR))') { Remove-Item -Recurse -Force '$(subst /,\,$(BUILD_DIR))' }"
 else
 	rm -rf "$(BUILD_DIR)"
 endif
@@ -80,7 +91,9 @@ endif
 update:
 	$(PYTHON) -m pip install --upgrade pip
 	$(PYTHON) -m pip install --upgrade west
-	$(PYTHON) -m west update
+	$(WEST) update --fetch always
+	$(PYTHON) -m pip install -r $(ZEPHYR_REQS)
+	$(PYTHON) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
 
 debug: clean build
 	@echo ""

@@ -1,6 +1,71 @@
-$openocd = "C:\Users\bzorba.B1-ES\.espressif\tools\openocd-esp32\v0.12.0-esp32-20250422\openocd-esp32\bin\openocd.exe"
-$cfg = "D:\baris\personal\personal_projects\ESP32\ESP32C6-Zephyr-IoT-Projects\external\zephyr\boards\espressif\esp32c6_devkitc\support\openocd.cfg"
-$fixup = "D:\baris\personal\personal_projects\ESP32\ESP32C6-Zephyr-IoT-Projects\.vscode\openocd_fixup.tcl"
+# ── Dynamic path discovery (reads Makefile; no hardcoded user/workspace paths) ─
+$wsRoot  = (Resolve-Path "$PSScriptRoot\..").Path
+$userHome = $HOME
+
+function Get-MakeVar([string]$VarName) {
+    $mk = Get-Content "$wsRoot\Makefile"
+    foreach ($line in $mk) {
+        if ($line.TrimStart().StartsWith('#')) { continue }
+        if ($line -match "^$VarName\s*\??=\s*(.+)") { return $Matches[1].Trim() }
+    }
+    return $null
+}
+
+function Get-LatestSubdir([string]$Base, [string]$Pattern = '') {
+    if (-not (Test-Path $Base)) { return $null }
+    $dirs = Get-ChildItem $Base -Directory | Where-Object { $Pattern -eq '' -or $_.Name -match $Pattern } | Sort-Object Name
+    if ($dirs) { return ($dirs | Select-Object -Last 1).FullName }
+    return $null
+}
+
+function Find-BoardCfg([string]$Dir, [string]$BoardBase) {
+    if (-not (Test-Path $Dir)) { return $null }
+    foreach ($item in Get-ChildItem $Dir -Directory) {
+        if ($item.Name -eq $BoardBase) {
+            $cfgPath = Join-Path $item.FullName "support\openocd.cfg"
+            if (Test-Path $cfgPath) { return $cfgPath }
+        }
+        $result = Find-BoardCfg $item.FullName $BoardBase
+        if ($result) { return $result }
+    }
+    return $null
+}
+
+function Get-BoardArch([string]$Board) {
+    $b = $Board.ToLower()
+    if ($b -match 'esp32c[2-9]|esp32h2') { return 'riscv64-zephyr-elf' }
+    if ($b -match 'esp32s2') { return 'xtensa-espressif_esp32s2_zephyr-elf' }
+    if ($b -match 'esp32s3') { return 'xtensa-espressif_esp32s3_zephyr-elf' }
+    if ($b -match 'esp32')   { return 'xtensa-espressif_esp32_zephyr-elf' }
+    return 'arm-zephyr-eabi'
+}
+
+# OpenOCD: $HOME/.espressif/tools/openocd-esp32/<version>/openocd-esp32/bin/openocd.exe
+$ocdBase = Join-Path $userHome '.espressif\tools\openocd-esp32'
+$ocdVer  = Get-LatestSubdir $ocdBase
+$openocd = if ($ocdVer) { Join-Path $ocdVer 'openocd-esp32\bin\openocd.exe' } else { 'openocd' }
+
+# Board openocd.cfg — resolved from BOARD in Makefile
+$boardName = Get-MakeVar 'BOARD'
+if (-not $boardName) { $boardName = 'esp32c6_devkitc/esp32c6/hpcore' }
+$boardBase = $boardName.Split('/')[0]
+$cfg = Find-BoardCfg "$wsRoot\external\zephyr\boards" $boardBase
+
+# GDB: $HOME/.zephyr_ide/toolchains/<sdk>/<arch>/bin/<arch>-gdb.exe
+$tcBase = Join-Path $userHome '.zephyr_ide\toolchains'
+$sdk    = Get-LatestSubdir $tcBase 'zephyr-sdk'
+$arch   = Get-BoardArch $boardName
+$gdb    = if ($sdk) { Join-Path $sdk "$arch\bin\$arch-gdb.exe" } else { $null }
+
+# ELF: <COMPILE_DIR>/build/zephyr/zephyr.elf — resolved from COMPILE_DIR in Makefile
+$compileDir = Get-MakeVar 'COMPILE_DIR'
+if (-not $compileDir) { $compileDir = 'applications/blink_LED' }
+$elf = Join-Path $wsRoot ($compileDir.Replace('/', '\') + '\build\zephyr\zephyr.elf')
+
+# openocd_fixup.tcl — workspace-relative
+$fixup = Join-Path $wsRoot '.vscode\openocd_fixup.tcl'
+# ─────────────────────────────────────────────────────────────────────────────
+
 $logfile = "$env:TEMP\openocd_gdb_test.log"
 Remove-Item $logfile -ErrorAction SilentlyContinue
 
@@ -14,9 +79,6 @@ if ($proc.HasExited) {
     exit 1
 }
 Write-Host "OpenOCD running (PID $($proc.Id)), connecting GDB..."
-
-$gdb = "C:\Users\bzorba.B1-ES\.zephyr_ide\toolchains\zephyr-sdk-0.17.3\riscv64-zephyr-elf\bin\riscv64-zephyr-elf-gdb.exe"
-$elf = "D:\baris\personal\personal_projects\ESP32\ESP32C6-Zephyr-IoT-Projects\applications\blink_LED\build\zephyr\zephyr.elf"
 
 $gdbScript = @"
 set pagination off

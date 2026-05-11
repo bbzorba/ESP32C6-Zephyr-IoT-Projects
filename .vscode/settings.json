@@ -2,16 +2,22 @@
     "terminal.integrated.defaultProfile.windows": "Zephyr IDE Terminal",
     "cmake.configureOnOpen": false,
     "cortex-debug.enableTelemetry": false,
-    "cortex-debug.openocdPath": "C:/Users/bzorba.B1-ES/.espressif/tools/openocd-esp32/v0.12.0-esp32-20250422/openocd-esp32/bin/openocd.exe",
     "peripheral-viewer.svdAddrGapThreshold": -1,
 
     // ─── Zephyr debug context (auto-generated — do not edit manually) ─────
-    "zephyr.compileDir": "applications/blink_LED",
-    "zephyr.board": "esp32c6_devkitc/esp32c6/hpcore",
-    "zephyr.openocdBoardPath": "espressif/esp32c6_devkitc/support/openocd.cfg",
-    "zephyr.sdkVersion": "zephyr-sdk-0.17.3",
-    "zephyr.gdbArch": "riscv64-zephyr-elf",
+    "zephyr.compileDir": "applications/threaded_blink_LEDs",
+    "zephyr.board": "esp32_devkitc/esp32/procpu",
+    "zephyr.openocdBoardPath": "espressif/esp32_devkitc/support/openocd.cfg",
+    "zephyr.sdkVersion": "zephyr-sdk-1.0.1",
+    "zephyr.gdbArch": "xtensa-espressif_esp32_zephyr-elf",
     "zephyr.svdFile": "",
-    "C_Cpp.default.compileCommands": "${workspaceFolder}/applications/blink_LED/build/compile_commands.json",
+    "cortex-debug.openocdPath": "C:/Users/bzorba.B1-ES/.espressif/tools/openocd-esp32/v0.12.0-esp32-20250422/openocd-esp32/bin/openocd.exe",
+    "clangd.arguments": [
+        "--compile-commands-dir=${workspaceFolder}/.vscode",
+        "--background-index",
+        "--completion-style=detailed",
+        "--header-insertion=never",
+        "--query-driver=C:/Users/bzorba.B1-ES/.zephyr_ide/toolchains/**/*"
+    ],
     // ─────────────────────────────────────────────────────────────────────────
 }

@@ -15,6 +15,7 @@ launch.json can reference them via ${config:zephyr.*} variable substitution.
 Run automatically via the  "gen-debug-context"  VS Code preLaunchTask.
 """
 
+import platform
 import re
 import sys
 from pathlib import Path
@@ -86,6 +87,20 @@ def _find_sdk(ws: Path):
         return None
     sdks = sorted(sdk_base.glob('zephyr-sdk-*'))
     return sdks[-1].name if sdks else None
+
+
+def _find_openocd(ws: Path) -> str:
+    """
+    Auto-discover the Espressif OpenOCD binary from ~/.espressif/tools/openocd-esp32/.
+    Tries the latest installed version; falls back to bare 'openocd' (assumes PATH).
+    """
+    exe = 'openocd.exe' if platform.system() == 'Windows' else 'openocd'
+    base = Path.home() / '.espressif' / 'tools' / 'openocd-esp32'
+    if base.exists():
+        candidates = sorted(base.glob(f'*/openocd-esp32/bin/{exe}'))
+        if candidates:
+            return str(candidates[-1]).replace('\\', '/')
+    return 'openocd'
 
 
 def _find_svd(ws: Path, board: str):
@@ -194,7 +209,17 @@ def main():
     else:
         print(f'  SVD file     : (none found — peripheral viewer unavailable)')
 
-    # 6. Update settings.json
+    # 6. OpenOCD binary path
+    openocd_path = _find_openocd(ws)
+    if openocd_path == 'openocd':
+        print(
+            f'  WARNING: OpenOCD not found at ~/.espressif/tools/openocd-esp32/.\n'
+            f'           Falling back to bare "openocd" (must be on PATH).'
+        )
+    else:
+        print(f'  OpenOCD path : {openocd_path}')
+
+    # 7. Update settings.json
     settings_path = ws / '.vscode' / 'settings.json'
     _update_settings(settings_path, {
         'zephyr.compileDir':       compile_dir,
@@ -203,6 +228,7 @@ def main():
         'zephyr.sdkVersion':       sdk_version,
         'zephyr.gdbArch':          gdb_arch,
         'zephyr.svdFile':          svd_file,
+        'cortex-debug.openocdPath': openocd_path,
         'C_Cpp.default.compileCommands':
             f'${{workspaceFolder}}/{compile_dir}/build/compile_commands.json',
     })

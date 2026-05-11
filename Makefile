@@ -17,11 +17,11 @@
 #COMPILE_DIR ?= applications/HTTP_Server
 #COMPILE_DIR ?= applications/HTTPS_Server
 #COMPILE_DIR ?= applications/HTTP_Client
-#COMPILE_DIR ?= applications/blink_LED
-COMPILE_DIR ?= applications/threaded_blink_LEDs
-
+COMPILE_DIR ?= applications/blink_LED
+#COMPILE_DIR ?= applications/threaded_blink_LEDs
 
 BOARD     ?= esp32c6_devkitc/esp32c6/hpcore
+#BOARD     ?= esp32_devkitc/esp32/procpu
 BUILD_DIR ?= $(COMPILE_DIR)/build
 BAUD      ?= 115200
 PORT      ?=

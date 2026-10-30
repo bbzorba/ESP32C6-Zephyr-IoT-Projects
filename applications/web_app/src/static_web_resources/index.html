@@ -42,9 +42,7 @@ tr.off td{color:var(--mut)}
 <div class="grid" id="envgrid">
 <div><div class="k">Temperature</div><div class="v" id="etemp">–</div></div>
 <div><div class="k">Humidity</div><div class="v" id="ehum">–</div></div>
-<div><div class="k">Pressure</div><div class="v" id="epress">–</div></div>
-<div><div class="k">Gas resistance</div><div class="v" id="egas">–</div></div>
-</div>
+<div><div class="k">Pressure</div><div class="v" id="epress">–</div></div></div>
 <div class="mut" id="envmsg"></div>
 </section>
 
@@ -52,6 +50,7 @@ tr.off td{color:var(--mut)}
 <h2>Hub (ESP32-C6)</h2>
 <div class="grid">
 <div><div class="k">Chip temperature</div><div class="v" id="temp">–</div></div>
+<div><div class="k">CPU load</div><div class="v" id="cpu">–</div></div>
 <div><div class="k">Uptime</div><div class="v" id="uptime">–</div></div>
 <div><div class="k">Wi-Fi signal</div><div class="v" id="rssi">–</div></div>
 <div><div class="k">IP address</div><div class="v" id="ip">–</div></div>
@@ -59,6 +58,8 @@ tr.off td{color:var(--mut)}
 <div><div class="k">Devices online</div><div class="v" id="count">–</div></div>
 </div>
 </section>
+
+<div id="nodes"></div>
 
 <section class="card">
 <div class="row">
@@ -69,7 +70,7 @@ tr.off td{color:var(--mut)}
 <div class="mut" id="scaninfo">–</div>
 <div class="tw">
 <table>
-<thead><tr><th></th><th>IP address</th><th>MAC address</th><th>Last seen</th><th>First seen</th></tr></thead>
+<thead><tr><th></th><th>Name</th><th>IP address</th><th>MAC address</th><th>Last seen</th><th>First seen</th></tr></thead>
 <tbody id="devs"></tbody>
 </table>
 </div>
@@ -86,6 +87,7 @@ function dur(s) {
   if (s < 86400) return Math.floor(s / 3600) + ' h ' + Math.floor(s % 3600 / 60) + ' min';
   return Math.floor(s / 86400) + ' d ' + Math.floor(s % 86400 / 3600) + ' h';
 }
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const ago = t => t ? (hubNow - t < 5 ? 'just now' : dur(hubNow - t) + ' ago') : '–';
 
 async function getJson(url, opts) {
@@ -98,7 +100,8 @@ async function loadStatus() {
   const s = await getJson('/api/status');
   hubNow = s.now;
   $('hubdot').className = 'dot' + (s.wifi.online ? ' on' : '');
-  $('temp').textContent = s.temp_c === null ? 'n/a' : s.temp_c.toFixed(1) + ' °C';
+  $('temp').textContent = s.chip_ok ? s.chip_temp_c.toFixed(1) + ' °C' : 'n/a';
+  $('cpu').textContent = s.cpu_load_pct.toFixed(1) + ' %';
   $('uptime').textContent = dur(s.now);
   $('rssi').textContent = s.wifi.rssi ? s.wifi.rssi + ' dBm' : '–';
   $('ip').textContent = s.wifi.ip || '–';
@@ -118,18 +121,32 @@ async function loadStatus() {
 }
 
 function renderEnv(e) {
-  const has = e.present && e.temp_c !== undefined;
+  const has = e.present && e.ok;
   $('envgrid').style.display = has ? '' : 'none';
   $('envage').textContent = has ? 'updated ' + ago(e.at) : '';
   $('envmsg').textContent = !e.present
     ? 'No BME688 detected. Check the wiring (SDA → GPIO6, SCL → GPIO7, 3V3, GND), then press RESET.'
-    : has ? 'Gas resistance rises with cleaner air; it settles after the sensor has run for ~30 min.'
-          : 'Waiting for the first reading…';
+    : has ? '' : 'Waiting for a reading…';
   if (!has) return;
   $('etemp').textContent = e.temp_c.toFixed(1) + ' °C';
   $('ehum').textContent = e.humidity.toFixed(1) + ' %';
-  $('epress').textContent = e.pressure_hpa.toFixed(1) + ' hPa';
-  $('egas').textContent = e.gas_kohm.toFixed(1) + ' kΩ';
+  $('epress').textContent = e.pressure_hpa.toFixed(1) + ' hPa';}
+
+// One card per client node; values with no unit are shown as given
+function fmtVal(x) {
+  const v = Math.abs(x.value) >= 100 || Number.isInteger(x.value) ? x.value.toFixed(0) : x.value.toFixed(1);
+  return v + (x.unit ? ' ' + esc(x.unit) : '');
+}
+
+async function loadNodes() {
+  const d = await getJson('/api/nodes');
+  $('nodes').innerHTML = d.nodes.map(n =>
+    '<section class="card"><div class="row"><h2><span class="dot' + (n.online ? ' on' : '') +
+    '"></span> ' + esc(n.model || n.id) + ' <span class="tag">' + esc(n.id) + '</span></h2>' +
+    '<span class="mut">' + (n.online ? 'updated ' + ago(n.last) : 'offline, last report ' + ago(n.last)) +
+    '</span></div><div class="grid">' +
+    n.sensors.map(x => '<div><div class="k">' + esc(x.name) + '</div><div class="v">' + fmtVal(x) +
+      '</div></div>').join('') + '</div></section>').join('');
 }
 
 async function loadDevices() {
@@ -145,17 +162,20 @@ function render() {
   $('devs').innerHTML = devices.filter(x => !only || x.online).map(x =>
     '<tr class="' + (x.online ? '' : 'off') + '">' +
     '<td><span class="dot' + (x.online ? ' on' : '') + '"></span></td>' +
-    '<td>' + x.ip + (x.self ? '<span class="tag">this hub</span>' : '') + '</td>' +
+    '<td>' + (esc(x.name) || '<span class="mut">unknown</span>') +
+    (x.self ? '<span class="tag">this hub</span>' : '') + '</td>' +
+    '<td>' + x.ip + '</td>' +
     '<td>' + x.mac + '</td>' +
     '<td>' + (x.online ? 'online' : ago(x.last)) + '</td>' +
     '<td>' + ago(x.first) + '</td></tr>').join('') ||
-    '<tr><td colspan="5" class="mut">No devices yet. The first scan starts when the hub joins Wi-Fi.</td></tr>';
+    '<tr><td colspan="6" class="mut">No devices yet. The first scan starts when the hub joins Wi-Fi.</td></tr>';
 }
 
 let wasRunning = false;
 async function tick() {
   try {
     const running = await loadStatus();
+    await loadNodes();
     if (wasRunning && !running) await loadDevices();
     wasRunning = running;
     $('err').textContent = '';

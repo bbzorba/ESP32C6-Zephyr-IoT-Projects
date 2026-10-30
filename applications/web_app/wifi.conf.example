@@ -1,4 +1,4 @@
 # Copy this file to wifi.conf (same folder) and fill in your network.
 # wifi.conf is git-ignored so the password never ends up in the repo.
-CONFIG_APP_WIFI_SSID="MyHomeWiFi"
-CONFIG_APP_WIFI_PSK="my-wifi-password"
+CONFIG_WIFI_CREDENTIALS_STATIC_SSID="MyHomeWiFi"
+CONFIG_WIFI_CREDENTIALS_STATIC_PASSWORD="my-wifi-password"

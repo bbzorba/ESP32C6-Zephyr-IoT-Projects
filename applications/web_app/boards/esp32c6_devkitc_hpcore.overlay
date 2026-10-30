@@ -89,6 +89,14 @@ i2s_led: &i2s {
 	};
 };
 
+/*
+ * Run the CPU at 80 MHz instead of 160 MHz to save power. The hub is idle
+ * almost all the time and 80 MHz is the lowest clock Wi-Fi supports.
+ */
+&cpu0 {
+	clock-frequency = <DT_FREQ_M(80)>;
+};
+
 /* On-die temperature sensor (alias die-temp0) */
 &coretemp {
 	status = "okay";

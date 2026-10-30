@@ -10,38 +10,43 @@
 #include <zephyr/net/net_ip.h>
 #include <zephyr/net/net_if.h>
 
-/* --- main.c: onboard RGB LED used as a status indicator --- */
+/* --- main.c: one 10 s sampler tick drives sensors and LAN scans --- */
+#define SAMPLE_PERIOD_S  10
+#define SCAN_EVERY_TICKS (CONFIG_APP_SCAN_INTERVAL_MIN * 60 / SAMPLE_PERIOD_S)
+
 enum status_led {
-	STATUS_LED_NO_CONFIG,   /* red: wifi.conf missing */
 	STATUS_LED_CONNECTING,  /* blue */
 	STATUS_LED_ONLINE,      /* green */
 	STATUS_LED_SCANNING,    /* purple */
 };
 
 void status_led_set(enum status_led state);
+/* Uptime (s) of the next scheduled LAN scan */
+uint32_t sampler_next_scan_at(void);
 
-/* --- wifi.c: station mode, DHCP, automatic reconnect --- */
+/* --- wifi.c: station mode via wifi_credentials, online state via conn_mgr --- */
 int wifi_start(void);
 bool wifi_is_online(void);
 struct net_if *wifi_iface(void);
 
-/* --- lan_scan.c: ARP sweep of the local /24 --- */
+/* --- lan_scan.c: ARP sweep of the local /24 + reverse DNS names --- */
 struct lan_device {
-	struct in_addr ip;
-	uint8_t mac[6];
+	struct in_addr addr;
+	char ip[NET_IPV4_ADDR_LEN];
+	char mac[18];
+	char name[32];          /* from the router's DNS, "" if unknown */
 	bool online;
 	bool self;
-	uint32_t first_seen; /* uptime, seconds */
-	uint32_t last_seen;  /* uptime, seconds */
+	uint32_t first_seen;    /* uptime, seconds */
+	uint32_t last_seen;     /* uptime, seconds */
 };
 
 struct lan_scan_info {
 	bool running;
-	uint32_t last_scan_end; /* uptime seconds, 0 = never */
-	uint32_t next_scan_at;  /* uptime seconds */
+	uint32_t last_end;      /* uptime seconds, 0 = never */
 	uint32_t duration_ms;
-	uint16_t progress;      /* hosts probed in the running scan */
-	uint16_t total;         /* hosts to probe in the running scan */
+	uint32_t progress;      /* hosts probed in the running scan */
+	uint32_t total;         /* hosts to probe in the running scan */
 };
 
 /* Returns false if a scan is already running. */
@@ -49,20 +54,29 @@ bool lan_scan_request(void);
 /* Copies up to max devices into out, sorted by IP. Returns the count. */
 int lan_scan_snapshot(struct lan_device *out, int max, struct lan_scan_info *info);
 
-/* --- sensors.c --- */
-/* On-die temperature in milli-degrees Celsius. */
-int sensors_die_temp(int32_t *milli_c);
-
-/* --- bme688.c: BME688 on I2C0, sampled every 10 s --- */
-struct env_reading {
-	int32_t temp_mc;     /* milli-degrees Celsius */
-	uint32_t humidity_m; /* milli-%RH */
-	uint32_t press_pa;   /* Pa */
-	uint32_t gas_ohm;    /* gas sensor resistance */
-	uint32_t at;         /* uptime seconds of the reading */
+/* --- sensors.c: readings cached by the sampler tick --- */
+struct readings {
+	uint32_t at;            /* uptime seconds of the sample */
+	bool chip_ok;
+	double chip_temp_c;
+	double cpu_load_pct;    /* CPU busy share since the previous tick */
+	int env_state;          /* 0 ok, -ENODEV no sensor, -EAGAIN none yet */
+	double temp_c;
+	double humidity;
+	double pressure_hpa;
 };
 
-/* 0 with *out filled, -EAGAIN before the first reading, -ENODEV if no sensor */
-int bme688_latest(struct env_reading *out);
+void sensors_sample(void);
+void sensors_get(struct readings *out);
+
+/* --- nodes.c: reports POSTed by client nodes --- */
+/* Parses one report (json is modified in place). 0 or -EINVAL. */
+int nodes_report(char *json, size_t len);
+/* Encodes all nodes as JSON into buf. 0 or a negative error. */
+int nodes_encode(char *buf, size_t len);
+
+/* --- bme688.c: BME688 on I2C0 --- */
+/* Fills the environment fields of r. 0 on success, -ENODEV if no sensor. */
+int bme688_read(struct readings *r);
 
 #endif /* APP_H_ */

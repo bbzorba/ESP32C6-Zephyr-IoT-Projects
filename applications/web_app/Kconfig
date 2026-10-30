@@ -2,18 +2,6 @@ mainmenu "Home Hub web app"
 
 menu "Home Hub"
 
-config APP_WIFI_SSID
-	string "Wi-Fi SSID"
-	default ""
-	help
-	  Set this in wifi.conf (see wifi.conf.example), not in prj.conf.
-
-config APP_WIFI_PSK
-	string "Wi-Fi password"
-	default ""
-	help
-	  Set this in wifi.conf (see wifi.conf.example), not in prj.conf.
-
 config APP_HTTP_PORT
 	int "HTTP server port"
 	default 80

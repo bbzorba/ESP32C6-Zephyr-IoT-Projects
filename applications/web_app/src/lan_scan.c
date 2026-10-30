@@ -1,21 +1,28 @@
 /*
- * LAN device discovery by ARP sweep.
+ * LAN device discovery by ARP sweep, plus names by reverse DNS.
  *
  * Every host of the local /24 gets one tiny UDP datagram (discard port 9).
  * Sending it forces the stack to ARP for that address, and every host on
  * the LAN answers ARP even when it ignores ping. After each batch the ARP
- * table is read back; whatever resolved is online.
+ * table is read back; whatever resolved is online. Zephyr has no LAN
+ * discovery API, so this sweep is the one piece written by hand.
+ *
+ * Names come from a PTR query to the DNS server we got over DHCP. Home
+ * routers (FRITZ!Box, OpenWrt, most ISP boxes) answer these with the
+ * hostname each device sent when it asked for its address.
  *
  * Devices that stop answering stay in the list marked offline, so the page
  * also shows which devices went away and when they were last seen.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/socket.h>
+#include <zephyr/net/dns_resolve.h>
 
 #include "arp.h"
 #include "app.h"
@@ -28,6 +35,7 @@ LOG_MODULE_REGISTER(lan_scan, LOG_LEVEL_INF);
  */
 #define BATCH_WAIT_MS   2100
 #define PROBE_PORT      9
+#define DNS_TIMEOUT_MS  1000
 
 struct collect_ctx {
 	struct net_if *iface;
@@ -44,11 +52,6 @@ static struct lan_scan_info scan_info;
 static K_MUTEX_DEFINE(lock);
 static K_SEM_DEFINE(scan_sem, 0, 1);
 
-static uint32_t now_s(void)
-{
-	return (uint32_t)(k_uptime_get() / MSEC_PER_SEC);
-}
-
 /* Caller holds lock. */
 static void upsert(const struct in_addr *ip, const uint8_t *mac, uint32_t now, bool self)
 {
@@ -56,7 +59,7 @@ static void upsert(const struct in_addr *ip, const uint8_t *mac, uint32_t now, b
 	int i;
 
 	for (i = 0; i < device_count; i++) {
-		if (devices[i].ip.s_addr == ip->s_addr) {
+		if (devices[i].addr.s_addr == ip->s_addr) {
 			dev = &devices[i];
 			break;
 		}
@@ -69,14 +72,14 @@ static void upsert(const struct in_addr *ip, const uint8_t *mac, uint32_t now, b
 		}
 		i = device_count++;
 		dev = &devices[i];
-		dev->ip = *ip;
+		dev->addr = *ip;
+		net_addr_ntop(AF_INET, ip, dev->ip, sizeof(dev->ip));
 		dev->first_seen = now;
-		LOG_INF("New device %d.%d.%d.%d", ((uint8_t *)&ip->s_addr)[0],
-			((uint8_t *)&ip->s_addr)[1], ((uint8_t *)&ip->s_addr)[2],
-			((uint8_t *)&ip->s_addr)[3]);
+		LOG_INF("New device %s", dev->ip);
 	}
 
-	memcpy(dev->mac, mac, sizeof(dev->mac));
+	snprintf(dev->mac, sizeof(dev->mac), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1],
+		 mac[2], mac[3], mac[4], mac[5]);
 	dev->last_seen = now;
 	dev->self = self;
 	seen[i] = true;
@@ -96,12 +99,80 @@ static void arp_collect_cb(struct arp_entry *entry, void *user_data)
 	k_mutex_unlock(&lock);
 }
 
+struct ptr_query {
+	struct k_sem done;
+	char name[32];
+};
+
+static void ptr_cb(enum dns_resolve_status status, struct dns_addrinfo *info, void *user_data)
+{
+	struct ptr_query *q = user_data;
+
+	if (status == DNS_EAI_INPROGRESS && info != NULL) {
+		/* Keep the host part only: "laptop.fritz.box" -> "laptop" */
+		size_t len = strcspn(info->ai_canonname, ".");
+
+		len = MIN(len, sizeof(q->name) - 1);
+		memcpy(q->name, info->ai_canonname, len);
+		q->name[len] = '\0';
+		return;
+	}
+	k_sem_give(&q->done);
+}
+
+/* Reverse DNS for one address; leaves name empty if the server has none. */
+static void lookup_name(const struct in_addr *addr, char *name, size_t len)
+{
+	const uint8_t *b = (const uint8_t *)&addr->s_addr;
+	struct ptr_query q = { 0 };
+	char query[32];
+
+	k_sem_init(&q.done, 0, 1);
+	snprintf(query, sizeof(query), "%u.%u.%u.%u.in-addr.arpa", b[3], b[2], b[1], b[0]);
+
+	if (dns_resolve_name(dns_resolve_get_default(), query, DNS_QUERY_TYPE_PTR, NULL, ptr_cb,
+			     &q, DNS_TIMEOUT_MS) == 0) {
+		k_sem_take(&q.done, K_MSEC(DNS_TIMEOUT_MS + 500));
+	}
+
+	/* Routers answer unnamed hosts with a placeholder like "192-168-178-1" */
+	snprintf(query, sizeof(query), "%u-%u-%u-%u", b[0], b[1], b[2], b[3]);
+	if (strcmp(q.name, query) == 0) {
+		q.name[0] = '\0';
+	}
+	strncpy(name, q.name, len - 1);
+	name[len - 1] = '\0';
+}
+
+static void resolve_names(void)
+{
+	for (int i = 0; i < device_count; i++) {
+		struct in_addr addr;
+		char name[sizeof(devices[0].name)];
+
+		if (!seen[i]) {
+			continue;
+		}
+
+		k_mutex_lock(&lock, K_FOREVER);
+		addr = devices[i].addr;
+		k_mutex_unlock(&lock);
+
+		lookup_name(&addr, name, sizeof(name));
+
+		k_mutex_lock(&lock, K_FOREVER);
+		if (name[0] != '\0') {
+			strcpy(devices[i].name, name);
+		}
+		k_mutex_unlock(&lock);
+	}
+}
+
 static void run_scan(void)
 {
 	struct net_if *iface = wifi_iface();
 	struct collect_ctx ctx = { .iface = iface };
 	struct in_addr *own;
-	struct net_linkaddr *lladdr;
 	uint32_t self, hosts;
 	int64_t start = k_uptime_get();
 	int sock;
@@ -158,7 +229,7 @@ static void run_scan(void)
 
 		k_msleep(BATCH_WAIT_MS);
 
-		ctx.now = now_s();
+		ctx.now = k_uptime_seconds();
 		net_arp_foreach(arp_collect_cb, &ctx);
 
 		k_mutex_lock(&lock, K_FOREVER);
@@ -168,15 +239,18 @@ static void run_scan(void)
 
 	zsock_close(sock);
 
-	lladdr = net_if_get_link_addr(iface);
+	k_mutex_lock(&lock, K_FOREVER);
+	upsert(own, net_if_get_link_addr(iface)->addr, k_uptime_seconds(), true);
+	k_mutex_unlock(&lock);
+
+	resolve_names();
 
 	k_mutex_lock(&lock, K_FOREVER);
-	upsert(own, lladdr->addr, now_s(), true);
 	for (int i = 0; i < device_count; i++) {
 		devices[i].online = seen[i];
 	}
 	scan_info.running = false;
-	scan_info.last_scan_end = now_s();
+	scan_info.last_end = k_uptime_seconds();
 	scan_info.duration_ms = (uint32_t)(k_uptime_get() - start);
 	k_mutex_unlock(&lock);
 
@@ -184,6 +258,9 @@ static void run_scan(void)
 	LOG_INF("Scan done in %u ms, %d devices known", scan_info.duration_ms, device_count);
 }
 
+/* The sweep takes ~35 s, so it runs in its own thread; the sampler tick in
+ * main.c (or the "Scan now" button) only wakes it.
+ */
 static void scan_thread(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
@@ -191,12 +268,7 @@ static void scan_thread(void *p1, void *p2, void *p3)
 	ARG_UNUSED(p3);
 
 	while (true) {
-		k_mutex_lock(&lock, K_FOREVER);
-		scan_info.next_scan_at = now_s() + CONFIG_APP_SCAN_INTERVAL_MIN * 60;
-		k_mutex_unlock(&lock);
-
-		/* Wake up on a manual request or when the interval expires */
-		(void)k_sem_take(&scan_sem, K_MINUTES(CONFIG_APP_SCAN_INTERVAL_MIN));
+		k_sem_take(&scan_sem, K_FOREVER);
 		run_scan();
 	}
 }
@@ -220,8 +292,8 @@ bool lan_scan_request(void)
 
 static int cmp_ip(const void *a, const void *b)
 {
-	uint32_t ia = ntohl(((const struct lan_device *)a)->ip.s_addr);
-	uint32_t ib = ntohl(((const struct lan_device *)b)->ip.s_addr);
+	uint32_t ia = ntohl(((const struct lan_device *)a)->addr.s_addr);
+	uint32_t ib = ntohl(((const struct lan_device *)b)->addr.s_addr);
 
 	return (ia > ib) - (ia < ib);
 }

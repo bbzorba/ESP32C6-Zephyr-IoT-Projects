@@ -16,6 +16,7 @@ target_sources(app PRIVATE
   src/lan_scan.c
   src/sensors.c
   src/bme688.c
+  src/nodes.c
   src/web_api.c
 )
 

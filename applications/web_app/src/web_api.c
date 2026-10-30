@@ -1,16 +1,20 @@
 /*
- * HTTP server: the dashboard page and a small JSON API.
+ * HTTP server: the dashboard page and a small JSON API, encoded with
+ * Zephyr's JSON library.
  *
  *   GET  /             dashboard (gzipped, served from flash)
- *   GET  /api/status   hub sensors + Wi-Fi + scan state
+ *   GET  /api/status   hub + BME688 readings, Wi-Fi, scan state
  *   GET  /api/devices  LAN device list
  *   POST /api/scan     start a LAN scan now
+ *   POST /api/node     sensor report from a client node (nodes.c)
+ *   GET  /api/nodes    latest report of every node
  */
 
 #include <stdio.h>
-#include <stdlib.h>
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/data/json.h>
 #include <zephyr/net/http/server.h>
 #include <zephyr/net/http/service.h>
 #include <zephyr/net/net_if.h>
@@ -20,9 +24,6 @@
 #include "app.h"
 
 LOG_MODULE_REGISTER(web_api, LOG_LEVEL_INF);
-
-/* One device renders to ~100 bytes of JSON */
-#define DEVICE_JSON_LEN 112
 
 static uint8_t index_html_gz[] = {
 #include "index.html.gz.inc"
@@ -39,141 +40,168 @@ static struct http_resource_detail_static index_detail = {
 	.static_data_len = sizeof(index_html_gz),
 };
 
-/* Responses are built into static buffers: the server handles one request
- * at a time, and the buffer must outlive the handler call.
+/* --- /api/status --- */
+
+struct env_json {
+	bool present;
+	bool ok;
+	uint32_t at;
+	double temp_c;
+	double humidity;
+	double pressure_hpa;
+};
+
+struct wifi_json {
+	bool online;
+	char ssid[WIFI_SSID_MAX_LEN + 1];
+	int32_t rssi;
+	uint32_t channel;
+	char ip[NET_IPV4_ADDR_LEN];
+	char mac[18];
+};
+
+struct scan_json {
+	bool running;
+	uint32_t progress;
+	uint32_t total;
+	uint32_t last_end;
+	uint32_t next_at;
+	uint32_t duration_ms;
+	uint32_t interval_min;
+};
+
+struct status_json {
+	uint32_t now;
+	bool chip_ok;
+	double chip_temp_c;
+	double cpu_load_pct;
+	struct env_json env;
+	struct wifi_json wifi;
+	struct scan_json scan;
+};
+
+static const struct json_obj_descr env_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct env_json, present, JSON_TOK_TRUE),
+	JSON_OBJ_DESCR_PRIM(struct env_json, ok, JSON_TOK_TRUE),
+	JSON_OBJ_DESCR_PRIM(struct env_json, at, JSON_TOK_UINT),
+	JSON_OBJ_DESCR_PRIM(struct env_json, temp_c, JSON_TOK_DOUBLE_FP),
+	JSON_OBJ_DESCR_PRIM(struct env_json, humidity, JSON_TOK_DOUBLE_FP),
+	JSON_OBJ_DESCR_PRIM(struct env_json, pressure_hpa, JSON_TOK_DOUBLE_FP),
+};
+
+static const struct json_obj_descr wifi_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct wifi_json, online, JSON_TOK_TRUE),
+	JSON_OBJ_DESCR_PRIM(struct wifi_json, ssid, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct wifi_json, rssi, JSON_TOK_NUMBER),
+	JSON_OBJ_DESCR_PRIM(struct wifi_json, channel, JSON_TOK_UINT),
+	JSON_OBJ_DESCR_PRIM(struct wifi_json, ip, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct wifi_json, mac, JSON_TOK_STRING_BUF),
+};
+
+static const struct json_obj_descr scan_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct scan_json, running, JSON_TOK_TRUE),
+	JSON_OBJ_DESCR_PRIM(struct scan_json, progress, JSON_TOK_UINT),
+	JSON_OBJ_DESCR_PRIM(struct scan_json, total, JSON_TOK_UINT),
+	JSON_OBJ_DESCR_PRIM(struct scan_json, last_end, JSON_TOK_UINT),
+	JSON_OBJ_DESCR_PRIM(struct scan_json, next_at, JSON_TOK_UINT),
+	JSON_OBJ_DESCR_PRIM(struct scan_json, duration_ms, JSON_TOK_UINT),
+	JSON_OBJ_DESCR_PRIM(struct scan_json, interval_min, JSON_TOK_UINT),
+};
+
+static const struct json_obj_descr status_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct status_json, now, JSON_TOK_UINT),
+	JSON_OBJ_DESCR_PRIM(struct status_json, chip_ok, JSON_TOK_TRUE),
+	JSON_OBJ_DESCR_PRIM(struct status_json, chip_temp_c, JSON_TOK_DOUBLE_FP),
+	JSON_OBJ_DESCR_PRIM(struct status_json, cpu_load_pct, JSON_TOK_DOUBLE_FP),
+	JSON_OBJ_DESCR_OBJECT(struct status_json, env, env_descr),
+	JSON_OBJ_DESCR_OBJECT(struct status_json, wifi, wifi_descr),
+	JSON_OBJ_DESCR_OBJECT(struct status_json, scan, scan_descr),
+};
+
+/* --- /api/devices --- */
+
+struct devices_json {
+	uint32_t now;
+	struct lan_device devices[CONFIG_APP_MAX_DEVICES];
+	size_t devices_len;
+};
+
+static const struct json_obj_descr device_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct lan_device, ip, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct lan_device, mac, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct lan_device, name, JSON_TOK_STRING_BUF),
+	JSON_OBJ_DESCR_PRIM(struct lan_device, online, JSON_TOK_TRUE),
+	JSON_OBJ_DESCR_PRIM(struct lan_device, self, JSON_TOK_TRUE),
+	JSON_OBJ_DESCR_PRIM_NAMED(struct lan_device, "first", first_seen, JSON_TOK_UINT),
+	JSON_OBJ_DESCR_PRIM_NAMED(struct lan_device, "last", last_seen, JSON_TOK_UINT),
+};
+
+static const struct json_obj_descr devices_descr[] = {
+	JSON_OBJ_DESCR_PRIM(struct devices_json, now, JSON_TOK_UINT),
+	JSON_OBJ_DESCR_OBJ_ARRAY(struct devices_json, devices, CONFIG_APP_MAX_DEVICES,
+				 devices_len, device_descr, ARRAY_SIZE(device_descr)),
+};
+
+/* Responses are encoded into static buffers: the server handles one request
+ * at a time, and the body must outlive the handler call.
  */
+static struct status_json status;
+static struct devices_json devices;
 static char status_buf[768];
-static char devices_buf[CONFIG_APP_MAX_DEVICES * DEVICE_JSON_LEN + 256];
-static struct lan_device snapshot[CONFIG_APP_MAX_DEVICES];
+static char devices_buf[CONFIG_APP_MAX_DEVICES * 160 + 64];
 
-static uint32_t now_s(void)
+static void fill_status(void)
 {
-	return (uint32_t)(k_uptime_get() / MSEC_PER_SEC);
-}
-
-/* Copy src into dst, dropping characters that would break a JSON string */
-static void json_safe_copy(char *dst, size_t len, const char *src, size_t src_len)
-{
-	size_t j = 0;
-
-	for (size_t i = 0; i < src_len && src[i] && j + 1 < len; i++) {
-		if (src[i] != '"' && src[i] != '\\' && (uint8_t)src[i] >= 0x20) {
-			dst[j++] = src[i];
-		}
-	}
-	dst[j] = '\0';
-}
-
-/* Format a milli-unit value with one decimal, e.g. 23456 -> "23.5" */
-static void fmt_milli_1dp(char *buf, size_t len, int32_t milli)
-{
-	int32_t tenths = (milli + (milli < 0 ? -50 : 50)) / 100;
-
-	snprintf(buf, len, "%s%d.%d", tenths < 0 ? "-" : "", abs(tenths) / 10, abs(tenths) % 10);
-}
-
-/* "null" or the BME688 object of the status JSON */
-static void build_env(char *buf, size_t len)
-{
-	struct env_reading env;
-	char temp[12], hum[12], press[12], gas[12];
-	int ret = bme688_latest(&env);
-
-	if (ret) {
-		snprintf(buf, len, "{\"present\":%s}", ret == -ENODEV ? "false" : "true");
-		return;
-	}
-
-	fmt_milli_1dp(temp, sizeof(temp), env.temp_mc);
-	fmt_milli_1dp(hum, sizeof(hum), env.humidity_m);
-	fmt_milli_1dp(press, sizeof(press), env.press_pa * 10);  /* Pa -> milli-hPa */
-	fmt_milli_1dp(gas, sizeof(gas), env.gas_ohm);           /* ohm -> kOhm */
-
-	snprintf(buf, len,
-		 "{\"present\":true,\"temp_c\":%s,\"humidity\":%s,\"pressure_hpa\":%s,"
-		 "\"gas_kohm\":%s,\"at\":%u}",
-		 temp, hum, press, gas, env.at);
-}
-
-static int build_status(void)
-{
-	char env_json[160];
 	struct net_if *iface = wifi_iface();
 	struct wifi_iface_status wst = { 0 };
 	struct lan_scan_info scan;
-	struct in_addr *ip = NULL;
-	char ip_str[NET_IPV4_ADDR_LEN] = "";
-	char ssid[WIFI_SSID_MAX_LEN + 1] = "";
-	char temp_str[16] = "null";
-	char mac_str[18] = "";
-	int32_t milli_c;
+	struct readings r;
 
-	if (sensors_die_temp(&milli_c) == 0) {
-		fmt_milli_1dp(temp_str, sizeof(temp_str), milli_c);
-	}
-	build_env(env_json, sizeof(env_json));
+	memset(&status, 0, sizeof(status));
+	status.now = k_uptime_seconds();
 
+	sensors_get(&r);
+	status.chip_ok = r.chip_ok;
+	status.chip_temp_c = r.chip_temp_c;
+	status.cpu_load_pct = r.cpu_load_pct;
+	status.env = (struct env_json){
+		.present = r.env_state != -ENODEV,
+		.ok = r.env_state == 0,
+		.at = r.at,
+		.temp_c = r.temp_c,
+		.humidity = r.humidity,
+		.pressure_hpa = r.pressure_hpa,
+	};
+
+	status.wifi.online = wifi_is_online();
 	if (iface != NULL) {
 		struct net_linkaddr *ll = net_if_get_link_addr(iface);
+		struct in_addr *ip = net_if_ipv4_get_global_addr(iface, NET_ADDR_PREFERRED);
 
-		snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
+		snprintf(status.wifi.mac, sizeof(status.wifi.mac), "%02x:%02x:%02x:%02x:%02x:%02x",
 			 ll->addr[0], ll->addr[1], ll->addr[2], ll->addr[3], ll->addr[4],
 			 ll->addr[5]);
-
-		ip = net_if_ipv4_get_global_addr(iface, NET_ADDR_PREFERRED);
 		if (ip != NULL) {
-			net_addr_ntop(AF_INET, ip, ip_str, sizeof(ip_str));
+			net_addr_ntop(AF_INET, ip, status.wifi.ip, sizeof(status.wifi.ip));
 		}
-
 		if (net_mgmt(NET_REQUEST_WIFI_IFACE_STATUS, iface, &wst, sizeof(wst)) == 0 &&
 		    wst.state >= WIFI_STATE_ASSOCIATED) {
-			json_safe_copy(ssid, sizeof(ssid), wst.ssid, wst.ssid_len);
-		} else {
-			wst.rssi = 0;
-			wst.channel = 0;
+			memcpy(status.wifi.ssid, wst.ssid, MIN(wst.ssid_len, WIFI_SSID_MAX_LEN));
+			status.wifi.rssi = wst.rssi;
+			status.wifi.channel = wst.channel;
 		}
 	}
 
-	lan_scan_snapshot(snapshot, 0, &scan);
-
-	return snprintf(status_buf, sizeof(status_buf),
-			"{\"now\":%u,\"temp_c\":%s,\"env\":%s,"
-			"\"wifi\":{\"online\":%s,\"ssid\":\"%s\",\"rssi\":%d,\"channel\":%u,"
-			"\"ip\":\"%s\",\"mac\":\"%s\"},"
-			"\"scan\":{\"running\":%s,\"progress\":%u,\"total\":%u,"
-			"\"last_end\":%u,\"next_at\":%u,\"duration_ms\":%u,"
-			"\"interval_min\":%d}}",
-			now_s(), temp_str, env_json, wifi_is_online() ? "true" : "false", ssid, wst.rssi,
-			wst.channel, ip_str, mac_str, scan.running ? "true" : "false",
-			scan.progress, scan.total, scan.last_scan_end, scan.next_scan_at,
-			scan.duration_ms, CONFIG_APP_SCAN_INTERVAL_MIN);
-}
-
-static int build_devices(void)
-{
-	struct lan_scan_info scan;
-	int n = lan_scan_snapshot(snapshot, ARRAY_SIZE(snapshot), &scan);
-	size_t len = 0;
-
-	len += snprintf(devices_buf + len, sizeof(devices_buf) - len,
-			"{\"now\":%u,\"scanning\":%s,\"last_end\":%u,\"devices\":[", now_s(),
-			scan.running ? "true" : "false", scan.last_scan_end);
-
-	for (int i = 0; i < n && len < sizeof(devices_buf) - DEVICE_JSON_LEN; i++) {
-		const struct lan_device *d = &snapshot[i];
-		char ip_str[NET_IPV4_ADDR_LEN];
-
-		net_addr_ntop(AF_INET, &d->ip, ip_str, sizeof(ip_str));
-		len += snprintf(devices_buf + len, sizeof(devices_buf) - len,
-				"%s{\"ip\":\"%s\",\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
-				"\"online\":%s,\"self\":%s,\"first\":%u,\"last\":%u}",
-				i ? "," : "", ip_str, d->mac[0], d->mac[1], d->mac[2], d->mac[3],
-				d->mac[4], d->mac[5], d->online ? "true" : "false",
-				d->self ? "true" : "false", d->first_seen, d->last_seen);
-	}
-
-	len += snprintf(devices_buf + len, sizeof(devices_buf) - len, "]}");
-	return len;
+	lan_scan_snapshot(NULL, 0, &scan);
+	status.scan = (struct scan_json){
+		.running = scan.running,
+		.progress = scan.progress,
+		.total = scan.total,
+		.last_end = scan.last_end,
+		.next_at = sampler_next_scan_at(),
+		.duration_ms = scan.duration_ms,
+		.interval_min = CONFIG_APP_SCAN_INTERVAL_MIN,
+	};
 }
 
 static const struct http_header json_headers[] = {
@@ -181,53 +209,125 @@ static const struct http_header json_headers[] = {
 	{ .name = "Cache-Control", .value = "no-store" },
 };
 
-static void json_response(struct http_response_ctx *rsp, const char *body, int len)
+static void json_response(struct http_response_ctx *rsp, const char *body, int ret)
 {
-	rsp->status = HTTP_200_OK;
-	rsp->headers = json_headers;
-	rsp->header_count = ARRAY_SIZE(json_headers);
-	rsp->body = (const uint8_t *)body;
-	rsp->body_len = len;
+	if (ret < 0) {
+		LOG_ERR("JSON encoding failed (%d)", ret);
+		rsp->status = HTTP_500_INTERNAL_SERVER_ERROR;
+		rsp->body_len = 0;
+	} else {
+		rsp->status = HTTP_200_OK;
+		rsp->headers = json_headers;
+		rsp->header_count = ARRAY_SIZE(json_headers);
+		rsp->body = (const uint8_t *)body;
+		rsp->body_len = strlen(body);
+	}
 	rsp->final_chunk = true;
 }
 
 /* GET handlers ignore any payload and answer on the final callback */
-static int status_handler(struct http_client_ctx *client, enum http_data_status status,
+static int status_handler(struct http_client_ctx *client, enum http_data_status status_,
 			  const struct http_request_ctx *req, struct http_response_ctx *rsp,
 			  void *user_data)
 {
-	if (status == HTTP_SERVER_DATA_FINAL) {
-		json_response(rsp, status_buf, build_status());
+	if (status_ == HTTP_SERVER_DATA_FINAL) {
+		fill_status();
+		json_response(rsp, status_buf,
+			      json_obj_encode_buf(status_descr, ARRAY_SIZE(status_descr), &status,
+						  status_buf, sizeof(status_buf)));
 	}
 	return 0;
 }
 
-static int devices_handler(struct http_client_ctx *client, enum http_data_status status,
+static int devices_handler(struct http_client_ctx *client, enum http_data_status status_,
 			   const struct http_request_ctx *req, struct http_response_ctx *rsp,
 			   void *user_data)
 {
-	if (status == HTTP_SERVER_DATA_FINAL) {
-		json_response(rsp, devices_buf, build_devices());
+	if (status_ == HTTP_SERVER_DATA_FINAL) {
+		devices.now = k_uptime_seconds();
+		devices.devices_len = lan_scan_snapshot(devices.devices,
+							ARRAY_SIZE(devices.devices), NULL);
+		json_response(rsp, devices_buf,
+			      json_obj_encode_buf(devices_descr, ARRAY_SIZE(devices_descr),
+						  &devices, devices_buf, sizeof(devices_buf)));
 	}
 	return 0;
 }
 
-static int scan_handler(struct http_client_ctx *client, enum http_data_status status,
+static int scan_handler(struct http_client_ctx *client, enum http_data_status status_,
 			const struct http_request_ctx *req, struct http_response_ctx *rsp,
 			void *user_data)
 {
-	static char buf[32];
-
-	if (status == HTTP_SERVER_DATA_FINAL) {
+	if (status_ == HTTP_SERVER_DATA_FINAL) {
 		bool started = lan_scan_request();
 
 		LOG_INF("Manual scan requested (%s)", started ? "started" : "already running");
-		json_response(rsp, buf,
-			      snprintf(buf, sizeof(buf), "{\"started\":%s}",
-				       started ? "true" : "false"));
+		json_response(rsp, started ? "{\"started\":true}" : "{\"started\":false}", 0);
 	}
 	return 0;
 }
+
+static int node_post_handler(struct http_client_ctx *client, enum http_data_status status_,
+			     const struct http_request_ctx *req, struct http_response_ctx *rsp,
+			     void *user_data)
+{
+	/* The body can arrive in several chunks */
+	static char body[2048];
+	static size_t len;
+
+	if (status_ == HTTP_SERVER_DATA_ABORTED) {
+		len = 0;
+		return 0;
+	}
+
+	if (len + req->data_len >= sizeof(body)) {
+		len = 0;
+		return -ENOMEM;
+	}
+	memcpy(body + len, req->data, req->data_len);
+	len += req->data_len;
+
+	if (status_ == HTTP_SERVER_DATA_FINAL) {
+		int ret = nodes_report(body, len);
+
+		len = 0;
+		if (ret) {
+			rsp->status = HTTP_400_BAD_REQUEST;
+			rsp->final_chunk = true;
+		} else {
+			json_response(rsp, "{\"ok\":true}", 0);
+		}
+	}
+	return 0;
+}
+
+static int nodes_get_handler(struct http_client_ctx *client, enum http_data_status status_,
+			     const struct http_request_ctx *req, struct http_response_ctx *rsp,
+			     void *user_data)
+{
+	static char buf[4 * 1400];
+
+	if (status_ == HTTP_SERVER_DATA_FINAL) {
+		json_response(rsp, buf, nodes_encode(buf, sizeof(buf)));
+	}
+	return 0;
+}
+
+static struct http_resource_detail_dynamic node_post_detail = {
+	.common = {
+		.type = HTTP_RESOURCE_TYPE_DYNAMIC,
+		.bitmask_of_supported_http_methods = BIT(HTTP_POST),
+	},
+	.cb = node_post_handler,
+};
+
+static struct http_resource_detail_dynamic nodes_get_detail = {
+	.common = {
+		.type = HTTP_RESOURCE_TYPE_DYNAMIC,
+		.bitmask_of_supported_http_methods = BIT(HTTP_GET),
+	},
+	.cb = nodes_get_handler,
+};
 
 static struct http_resource_detail_dynamic status_detail = {
 	.common = {
@@ -262,3 +362,5 @@ HTTP_RESOURCE_DEFINE(index_res, hub_http_service, "/", &index_detail);
 HTTP_RESOURCE_DEFINE(status_res, hub_http_service, "/api/status", &status_detail);
 HTTP_RESOURCE_DEFINE(devices_res, hub_http_service, "/api/devices", &devices_detail);
 HTTP_RESOURCE_DEFINE(scan_res, hub_http_service, "/api/scan", &scan_detail);
+HTTP_RESOURCE_DEFINE(node_res, hub_http_service, "/api/node", &node_post_detail);
+HTTP_RESOURCE_DEFINE(nodes_res, hub_http_service, "/api/nodes", &nodes_get_detail);

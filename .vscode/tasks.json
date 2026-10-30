@@ -95,7 +95,7 @@
             //   2. Press F5 — this task does an incremental build then attaches.
             "label": "debug-prep",
             "dependsOrder": "sequence",
-            "dependsOn": ["gen-debug-context", "build"],
+            "dependsOn": ["build", "gen-debug-context"],
             "problemMatcher": []
         }
     ]

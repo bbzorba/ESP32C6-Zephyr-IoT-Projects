@@ -21,8 +21,8 @@
 #COMPILE_DIR ?= applications/threaded_blink_LEDs
 COMPILE_DIR ?= applications/web_app
 
-
 BOARD     ?= esp32c6_devkitc/esp32c6/hpcore
+#BOARD     ?= esp32_devkitc/esp32/procpu
 BUILD_DIR ?= $(COMPILE_DIR)/build
 BAUD      ?= 115200
 PORT      ?=

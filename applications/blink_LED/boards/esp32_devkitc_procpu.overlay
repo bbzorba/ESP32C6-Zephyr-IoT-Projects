@@ -1,0 +1,53 @@
+/*
+ * Board overlay for ESP32-DevKitC PROCPU
+ *
+ * The ESP32 DevKitC has no built-in WS2812 LED. Connect a WS2812 data pin
+ * to GPIO13 (SPIM2 MOSI). The SPI-based driver is used because the ESP32
+ * does not have an I2S-DMA path suitable for LED strips.
+ *
+ * led-strip → WS2812 on GPIO13 (SPI2 MOSI, 6.4 MHz)
+ */
+
+#include <zephyr/dt-bindings/led/led.h>
+
+&spi2 {
+	/* Workaround: keep MOSI line low between transmissions */
+	line-idle-low;
+
+	led_strip: ws2812@0 {
+		compatible = "worldsemi,ws2812-spi";
+
+		/* SPI */
+		reg = <0>; /* ignored, but required for SPI bindings */
+		spi-max-frequency = <6400000>;
+
+		/* WS2812 timing at 6.4 MHz (156.25 ns/bit × 8 bits = 1.25 µs/bit):
+		 *   one-frame  = 0xF0 → 11110000 → 625 ns high + 625 ns low
+		 *   zero-frame = 0xC0 → 11000000 → 312.5 ns high + 937.5 ns low
+		 */
+		spi-cpha;
+		spi-one-frame  = <0xf0>;
+		spi-zero-frame = <0xc0>;
+
+		chain-length = <1>;
+		color-mapping = <LED_COLOR_ID_GREEN
+				 LED_COLOR_ID_RED
+				 LED_COLOR_ID_BLUE>;
+	};
+};
+
+/* Override SPI2 pinctrl to use only MOSI (data) — WS2812 is unidirectional */
+&pinctrl {
+	spim2_default: spim2_default {
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO13>;
+			output-low;
+		};
+	};
+};
+
+/ {
+	aliases {
+		led-strip = &led_strip;
+	};
+};

@@ -2,18 +2,24 @@
   "version": "0.2.0",
   "configurations": [
     {
+      // ── Active-app debug (project/board come from gen-debug-context) ──────
+      // gen-debug-context (run as part of debug-prep) copies the built ELF to
+      // .vscode/zephyr.elf and writes .vscode/board_cfg.tcl that sources the
+      // correct board openocd.cfg.  Only machine-specific paths (GDB binary,
+      // OpenOCD binary) are read from settings.json via ${config:...} — those
+      // never change between projects, only between machines.
       "name": "Debug: Active App (from Makefile)",
       "type": "cortex-debug",
       "request": "launch",
       "servertype": "openocd",
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "debug-prep",
-      "executable": "${workspaceFolder}/${config:zephyr.compileDir}/build/zephyr/zephyr.elf",
+      "executable": "${workspaceFolder}/.vscode/zephyr.elf",
       "configFiles": [
-        "${workspaceFolder}/external/zephyr/boards/${config:zephyr.openocdBoardPath}",
+        "${workspaceFolder}/.vscode/board_cfg.tcl",
         "${workspaceFolder}/.vscode/openocd_fixup.tcl"
       ],
-      "gdbPath": "${userHome}/.zephyr_ide/toolchains/${config:zephyr.sdkVersion}/${config:zephyr.gdbArch}/bin/${config:zephyr.gdbArch}-gdb",
+      "gdbPath": "${config:zephyr.gdbPath}",
       "svdFile": "",
       "loadFiles": [],
       "hardwareBreakpoints": { "enabled": true, "limit": 4 },

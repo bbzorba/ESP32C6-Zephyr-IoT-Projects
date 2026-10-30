@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Home Hub</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--fg:#1c1f24;--mut:#6b7280;--line:#e5e7eb;--ok:#16a34a;--off:#9ca3af;--acc:#2563eb}
+@media (prefers-color-scheme:dark){:root{--bg:#111318;--card:#1b1e25;--fg:#e8eaee;--mut:#9aa1ac;--line:#2a2e37;--ok:#22c55e;--off:#5b6170;--acc:#60a5fa}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:960px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:4px 0 16px;display:flex;align-items:center;gap:10px}
+h2{font-size:16px;margin:0 0 12px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--off);display:inline-block}
+.dot.on{background:var(--ok)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+.k{color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.v{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;word-break:break-all}
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px}
+.row h2{margin:0;flex:1}
+button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:8px 14px;font:inherit;cursor:pointer}
+button:disabled{opacity:.55;cursor:default}
+label{color:var(--mut);font-size:14px}
+.mut{color:var(--mut);font-size:13px}
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--mut);font-weight:500;font-size:13px}
+tr.off td{color:var(--mut)}
+.tag{font-size:11px;border:1px solid var(--line);border-radius:4px;padding:1px 5px;margin-left:6px;color:var(--mut)}
+.err{color:#dc2626}
+</style>
+</head>
+<body>
+<main>
+<h1><span id="hubdot" class="dot"></span>Home Hub</h1>
+
+<section class="card">
+<div class="row"><h2>Environment (BME688)</h2><span class="mut" id="envage"></span></div>
+<div class="grid" id="envgrid">
+<div><div class="k">Temperature</div><div class="v" id="etemp">–</div></div>
+<div><div class="k">Humidity</div><div class="v" id="ehum">–</div></div>
+<div><div class="k">Pressure</div><div class="v" id="epress">–</div></div>
+<div><div class="k">Gas resistance</div><div class="v" id="egas">–</div></div>
+</div>
+<div class="mut" id="envmsg"></div>
+</section>
+
+<section class="card">
+<h2>Hub (ESP32-C6)</h2>
+<div class="grid">
+<div><div class="k">Chip temperature</div><div class="v" id="temp">–</div></div>
+<div><div class="k">Uptime</div><div class="v" id="uptime">–</div></div>
+<div><div class="k">Wi-Fi signal</div><div class="v" id="rssi">–</div></div>
+<div><div class="k">IP address</div><div class="v" id="ip">–</div></div>
+<div><div class="k">Network</div><div class="v" id="ssid">–</div></div>
+<div><div class="k">Devices online</div><div class="v" id="count">–</div></div>
+</div>
+</section>
+
+<section class="card">
+<div class="row">
+<h2>Devices on the network</h2>
+<label><input type="checkbox" id="onlyon"> Online only</label>
+<button id="scanbtn">Scan now</button>
+</div>
+<div class="mut" id="scaninfo">–</div>
+<div class="tw">
+<table>
+<thead><tr><th></th><th>IP address</th><th>MAC address</th><th>Last seen</th><th>First seen</th></tr></thead>
+<tbody id="devs"></tbody>
+</table>
+</div>
+</section>
+<div class="mut err" id="err"></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let hubNow = 0, devices = [];
+
+function dur(s) {
+  if (s < 60) return s + ' s';
+  if (s < 3600) return Math.floor(s / 60) + ' min';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ' + Math.floor(s % 3600 / 60) + ' min';
+  return Math.floor(s / 86400) + ' d ' + Math.floor(s % 86400 / 3600) + ' h';
+}
+const ago = t => t ? (hubNow - t < 5 ? 'just now' : dur(hubNow - t) + ' ago') : '–';
+
+async function getJson(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(url + ': HTTP ' + r.status);
+  return r.json();
+}
+
+async function loadStatus() {
+  const s = await getJson('/api/status');
+  hubNow = s.now;
+  $('hubdot').className = 'dot' + (s.wifi.online ? ' on' : '');
+  $('temp').textContent = s.temp_c === null ? 'n/a' : s.temp_c.toFixed(1) + ' °C';
+  $('uptime').textContent = dur(s.now);
+  $('rssi').textContent = s.wifi.rssi ? s.wifi.rssi + ' dBm' : '–';
+  $('ip').textContent = s.wifi.ip || '–';
+  $('ssid').textContent = s.wifi.ssid ? s.wifi.ssid + ' (ch ' + s.wifi.channel + ')' : '–';
+  renderEnv(s.env);
+  const sc = s.scan;
+  $('scanbtn').disabled = sc.running;
+  if (sc.running) {
+    $('scaninfo').textContent = 'Scanning… ' + sc.progress + ' / ' + sc.total + ' addresses';
+  } else {
+    $('scaninfo').textContent = (sc.last_end ? 'Last scan ' + ago(sc.last_end) +
+      ' (took ' + (sc.duration_ms / 1000).toFixed(0) + ' s). ' : 'No scan yet. ') +
+      'Next automatic scan in ' + dur(Math.max(0, sc.next_at - s.now)) +
+      ' (every ' + sc.interval_min + ' min).';
+  }
+  return sc.running;
+}
+
+function renderEnv(e) {
+  const has = e.present && e.temp_c !== undefined;
+  $('envgrid').style.display = has ? '' : 'none';
+  $('envage').textContent = has ? 'updated ' + ago(e.at) : '';
+  $('envmsg').textContent = !e.present
+    ? 'No BME688 detected. Check the wiring (SDA → GPIO6, SCL → GPIO7, 3V3, GND), then press RESET.'
+    : has ? 'Gas resistance rises with cleaner air; it settles after the sensor has run for ~30 min.'
+          : 'Waiting for the first reading…';
+  if (!has) return;
+  $('etemp').textContent = e.temp_c.toFixed(1) + ' °C';
+  $('ehum').textContent = e.humidity.toFixed(1) + ' %';
+  $('epress').textContent = e.pressure_hpa.toFixed(1) + ' hPa';
+  $('egas').textContent = e.gas_kohm.toFixed(1) + ' kΩ';
+}
+
+async function loadDevices() {
+  const d = await getJson('/api/devices');
+  hubNow = d.now;
+  devices = d.devices;
+  render();
+}
+
+function render() {
+  const only = $('onlyon').checked;
+  $('count').textContent = devices.filter(x => x.online).length + ' / ' + devices.length;
+  $('devs').innerHTML = devices.filter(x => !only || x.online).map(x =>
+    '<tr class="' + (x.online ? '' : 'off') + '">' +
+    '<td><span class="dot' + (x.online ? ' on' : '') + '"></span></td>' +
+    '<td>' + x.ip + (x.self ? '<span class="tag">this hub</span>' : '') + '</td>' +
+    '<td>' + x.mac + '</td>' +
+    '<td>' + (x.online ? 'online' : ago(x.last)) + '</td>' +
+    '<td>' + ago(x.first) + '</td></tr>').join('') ||
+    '<tr><td colspan="5" class="mut">No devices yet. The first scan starts when the hub joins Wi-Fi.</td></tr>';
+}
+
+let wasRunning = false;
+async function tick() {
+  try {
+    const running = await loadStatus();
+    if (wasRunning && !running) await loadDevices();
+    wasRunning = running;
+    $('err').textContent = '';
+  } catch (e) {
+    $('hubdot').className = 'dot';
+    $('err').textContent = 'Hub not reachable: ' + e.message;
+  }
+}
+
+$('scanbtn').onclick = async () => {
+  $('scanbtn').disabled = true;
+  try { await getJson('/api/scan', { method: 'POST' }); } catch (e) { $('err').textContent = e.message; }
+  tick();
+};
+$('onlyon').onchange = render;
+
+tick().then(loadDevices).catch(() => {});
+setInterval(tick, 3000);
+setInterval(() => loadDevices().catch(() => {}), 60000);
+</script>
+</body>
+</html>

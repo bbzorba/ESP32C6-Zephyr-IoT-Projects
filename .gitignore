@@ -3,3 +3,6 @@ external
 **/build*/
 .vscode/compile_commands.json
 .vscode/extensions.json
+
+# Wi-Fi credentials (see applications/web_app/wifi.conf.example)
+**/wifi.conf

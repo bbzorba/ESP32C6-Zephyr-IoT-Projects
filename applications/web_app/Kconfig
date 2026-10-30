@@ -1,0 +1,31 @@
+mainmenu "Home Hub web app"
+
+menu "Home Hub"
+
+config APP_WIFI_SSID
+	string "Wi-Fi SSID"
+	default ""
+	help
+	  Set this in wifi.conf (see wifi.conf.example), not in prj.conf.
+
+config APP_WIFI_PSK
+	string "Wi-Fi password"
+	default ""
+	help
+	  Set this in wifi.conf (see wifi.conf.example), not in prj.conf.
+
+config APP_HTTP_PORT
+	int "HTTP server port"
+	default 80
+
+config APP_SCAN_INTERVAL_MIN
+	int "Automatic LAN scan interval (minutes)"
+	default 10
+
+config APP_MAX_DEVICES
+	int "Maximum number of LAN devices remembered"
+	default 64
+
+endmenu
+
+source "Kconfig.zephyr"

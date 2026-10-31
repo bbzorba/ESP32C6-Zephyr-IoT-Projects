@@ -68,6 +68,7 @@ int main(void)
 		k_timer_status_sync(&sample_timer);
 
 		sensors_sample();
+		mqtt_pub_trigger();
 
 		/* First scan on the first tick after joining Wi-Fi, then every
 		 * SCAN_EVERY_TICKS. Manual scans don't move this schedule.

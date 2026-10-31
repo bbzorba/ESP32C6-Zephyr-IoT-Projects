@@ -17,6 +17,7 @@ target_sources(app PRIVATE
   src/sensors.c
   src/bme688.c
   src/nodes.c
+  src/mqtt_pub.c
   src/web_api.c
 )
 

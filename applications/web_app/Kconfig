@@ -14,6 +14,23 @@ config APP_MAX_DEVICES
 	int "Maximum number of LAN devices remembered"
 	default 64
 
+config APP_MQTT_BROKER
+	string "MQTT broker for the live web page"
+	default "broker.hivemq.com"
+	help
+	  Public broker by default: anyone who knows the topic can read and
+	  publish. Only sensor values are sent (see src/mqtt_pub.c).
+
+config APP_MQTT_BROKER_PORT
+	int "MQTT broker port (plain TCP)"
+	default 1883
+
+config APP_MQTT_TOPIC_PREFIX
+	string "MQTT topic prefix"
+	default "bbzorba/home-hub/v1"
+	help
+	  Must match the topic in the website's live page.
+
 endmenu
 
 source "Kconfig.zephyr"

@@ -85,6 +85,26 @@ card on the dashboard. The i.MX 8M Plus client lives in
 [NXP-imx8MPlus-applications](https://github.com/bbzorba/NXP-imx8MPlus-applications)
 (`home_hub_node`).
 
+## Live page on bbzorba.github.io (MQTT)
+
+On every 10 s tick the hub also publishes to an MQTT broker
+(`src/mqtt_pub.c`); https://bbzorba.github.io/live subscribes over
+WebSocket from the visitor's browser.
+
+| Topic | Content |
+|---|---|
+| `bbzorba/home-hub/v1/state` | JSON: hub (chip temperature, CPU load, uptime, RSSI), BME688, all client nodes |
+| `bbzorba/home-hub/v1/status` | `online`; the broker sets `offline` (last will) ~90 s after the hub drops off |
+
+Both are retained, so a new visitor sees the latest values at once. Broker,
+port and topic prefix are Kconfig options (`CONFIG_APP_MQTT_*`).
+
+Only sensor values are published; the LAN device list, addresses and Wi-Fi
+name stay on the local page. The default broker (`broker.hivemq.com`) is
+public: anyone who knows the topic can read it and could publish fake
+values. For that, move to a private broker (e.g. HiveMQ Cloud free tier)
+with a write password for the hub and a read-only user for the page.
+
 ## How the LAN scan works
 
 Every host of the hub's /24 gets one 1-byte UDP datagram to port 9. That
@@ -106,5 +126,6 @@ Phones in deep sleep can miss a scan and show offline for one round.
 - `src/sensors.c` - caches all readings; chip temperature
 - `src/bme688.c` - BME688 temperature, humidity, pressure (I2C0)
 - `src/nodes.c` - client node reports
+- `src/mqtt_pub.c` - publishes readings for the live web page
 - `src/web_api.c` - HTTP server, JSON API (Zephyr JSON library)
 - `src/static_web_resources/index.html` - dashboard (gzipped into flash at build time)

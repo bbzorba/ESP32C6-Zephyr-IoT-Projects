@@ -75,6 +75,10 @@ int nodes_report(char *json, size_t len);
 /* Encodes all nodes as JSON into buf. 0 or a negative error. */
 int nodes_encode(char *buf, size_t len);
 
+/* --- mqtt_pub.c: readings to the MQTT broker for the live web page --- */
+/* Called on each sampler tick; the publish happens in the MQTT thread. */
+void mqtt_pub_trigger(void);
+
 /* --- bme688.c: BME688 on I2C0 --- */
 /* Fills the environment fields of r. 0 on success, -ENODEV if no sensor. */
 int bme688_read(struct readings *r);

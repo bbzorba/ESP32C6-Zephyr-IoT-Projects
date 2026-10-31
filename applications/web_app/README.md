@@ -3,6 +3,10 @@
 ESP32-C6 + Zephyr. Joins the home Wi-Fi, serves a dashboard on port 80,
 reads a BME688 and keeps a named list of every device on the LAN.
 
+For how the hub, client nodes, MQTT broker and the website fit together
+(block and sequence diagrams, adding nodes), see
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Setup
 
 1. Copy `wifi.conf.example` to `wifi.conf` and fill in SSID and password

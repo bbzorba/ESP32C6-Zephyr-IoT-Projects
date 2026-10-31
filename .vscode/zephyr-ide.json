@@ -1,7 +1,6 @@
 {
   "projects": {
     "blink_LED": {
-      "rel_path": "applications/blink_LED",
       "name": "blink_LED",
       "buildConfigs": {
         "build/esp32c6_devkitc/esp32c6/hpcore": {
@@ -13,7 +12,6 @@
             "-DCONFIG_DEBUG_OPTIMIZATIONS=y",
             "-DCONFIG_DEBUG_THREAD_INFO=y"
           ],
-          "debugOptimization": "Debug",
           "confFiles": {
             "config": [],
             "overlay": []
@@ -27,14 +25,16 @@
               "name": "default",
               "args": ""
             }
-          }
+          },
+          "compilerOptimization": "debug"
         }
       },
       "twisterConfigs": {},
       "confFiles": {
         "config": [],
         "overlay": []
-      }
+      },
+      "relPath": "applications/blink_LED"
     }
   }
 }

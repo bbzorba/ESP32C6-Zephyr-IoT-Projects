@@ -75,6 +75,13 @@ int nodes_report(char *json, size_t len);
 /* Encodes all nodes as JSON into buf. 0 or a negative error. */
 int nodes_encode(char *buf, size_t len);
 
+/* --- ota.c: MCUboot image confirmation and firmware version --- */
+/* Called when the hub is online; confirms a trial image. */
+void ota_online(void);
+void ota_log_boot(void);
+const char *ota_version(void);
+bool ota_confirmed(void);
+
 /* --- mqtt_pub.c: readings to the MQTT broker for the live web page --- */
 /* Called on each sampler tick; the publish happens in the MQTT thread. */
 void mqtt_pub_trigger(void);

@@ -9,3 +9,9 @@ external
 
 # Wi-Fi credentials (see applications/web_app/wifi.conf.example)
 **/wifi.conf
+
+# WSL Python environment (see README)
+.venv-wsl/
+
+# Firmware signing keys: never commit, back up separately
+**/keys/

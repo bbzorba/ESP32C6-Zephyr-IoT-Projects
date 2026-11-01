@@ -58,6 +58,7 @@ int main(void)
 	uint32_t next_scan_tick = 0;
 
 	LOG_INF("Home Hub starting");
+	ota_log_boot();
 
 	http_server_start();
 	wifi_start();

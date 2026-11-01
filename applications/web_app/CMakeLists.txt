@@ -18,6 +18,7 @@ target_sources(app PRIVATE
   src/bme688.c
   src/nodes.c
   src/mqtt_pub.c
+  src/ota.c
   src/web_api.c
 )
 

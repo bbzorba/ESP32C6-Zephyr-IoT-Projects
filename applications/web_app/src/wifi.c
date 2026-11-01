@@ -80,6 +80,7 @@ static void l4_event_handler(struct net_mgmt_event_callback *cb, uint64_t event,
 		atomic_set(&online, 1);
 		status_led_set(STATUS_LED_ONLINE);
 		LOG_INF("Online: http://%s/", addr);
+		ota_online();
 	} else {
 		atomic_set(&online, 0);
 		status_led_set(STATUS_LED_CONNECTING);

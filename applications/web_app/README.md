@@ -5,25 +5,35 @@ reads a BME688 and keeps a named list of every device on the LAN.
 
 For how the hub, client nodes, MQTT broker and the website fit together
 (block and sequence diagrams, adding nodes), see
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](ARCHITECTURE.md). For the bootloader and updates over
+USB and Wi-Fi, see [BOOTLOADER.md](BOOTLOADER.md).
 
-## Setup
+## Setup (WSL / Linux)
 
-1. Copy `wifi.conf.example` to `wifi.conf` and fill in SSID and password
-   (`wifi.conf` is git-ignored). The build fails with a clear message if the
-   SSID is missing.
-2. Build and flash (from the workspace root):
+Everything builds and flashes from WSL (Ubuntu 22.04), from the workspace
+root:
 
+1. Once per machine: the [Zephyr SDK](https://github.com/zephyrproject-rtos/sdk-ng/releases)
+   0.17.3 with the `riscv64-zephyr-elf` toolchain, and the Python venv:
+   `make setup HOST_PYTHON=python3.10` (creates `.venv-wsl`; Zephyr needs
+   Python ≥ 3.10). Wi-Fi also needs Espressif's blobs once:
+   `.venv-wsl/bin/west blobs fetch hal_espressif`.
+2. Copy `wifi.conf.example` to `wifi.conf` and fill in SSID and password
+   (`wifi.conf` is git-ignored).
+3. Create the firmware signing key once and back it up (see BOOTLOADER.md):
+   `.venv-wsl/bin/imgtool keygen -k applications/web_app/keys/hub-signing-key.pem -t ecdsa-p256`
+4. Give WSL the board's USB-UART (admin PowerShell, `bind` only once):
+   `usbipd bind --busid <id>` then `usbipd attach --wsl --busid <id>`;
+   it appears as `/dev/ttyUSB0`.
+5. Build and flash:
+
+   ```bash
+   make build                       # sysbuild: MCUboot + signed application
+   make flash PORT=/dev/ttyUSB0     # first install over USB
+   make ota                         # later updates over Wi-Fi
    ```
-   .venv\Scripts\python.exe tools\west_compat.py build -b esp32c6_devkitc/esp32c6/hpcore applications/web_app -d applications/web_app/build --pristine=auto
-   .venv\Scripts\python.exe tools\west_compat.py flash -d applications/web_app/build --esp-device COM8
-   ```
 
-   or `make build-flash` (the Makefile points at this app).
-3. The serial log prints `Online: http://<ip>/`. Open that address.
-
-Wi-Fi needs Espressif's binary blobs once per workspace:
-`west blobs fetch hal_espressif`.
+6. The serial log prints `Online: http://<ip>/`. Open that address.
 
 ## BME688 wiring (I2C0)
 

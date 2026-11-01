@@ -1,7 +1,9 @@
 # ESP32C6-Zephyr-IoT-Projects
 
-Zephyr RTOS applications for the ESP32-C6-DevKitC, built with west
-(`make build-flash`, see the `Makefile`).
+Zephyr RTOS applications for the ESP32-C6-DevKitC, built with west from
+WSL/Linux (`make build`, `make flash PORT=/dev/ttyUSB0`, see the
+`Makefile`). The Linux venv lives in `.venv-wsl`; set it up with
+`make setup HOST_PYTHON=python3.10`.
 
 | Application | What it is |
 |---|---|

@@ -33,25 +33,40 @@ ifeq ($(OS),Windows_NT)
     PYTHON := .venv/Scripts/python.exe
 	PYTHON_CMD := .venv\Scripts\python.exe
     VENV_MARKER := .venv/Scripts/python.exe
+    VENV := .venv
 else
-    PYTHON := .venv/bin/python
+    # Linux / WSL: separate venv so it can live next to the Windows one
+    VENV := .venv-wsl
+    PYTHON := $(VENV)/bin/python
 	PYTHON_CMD := $(PYTHON)
-    VENV_MARKER := .venv/bin/python
+    VENV_MARKER := $(VENV)/bin/python
 endif
-DEPS_MARKER := .venv/.deps-ready
+DEPS_MARKER := $(VENV)/.deps-ready
+
+# Apps with a sysbuild.conf (e.g. web_app) are built with sysbuild, which
+# adds MCUboot and signs the application image.
+SYSBUILD := $(if $(wildcard $(COMPILE_DIR)/sysbuild.conf),--sysbuild,--no-sysbuild)
+
+# OTA / recovery (applications with MCUboot, see web_app/BOOTLOADER.md)
+HUB_IP    ?= 192.168.178.172
+SMPMGR    := $(dir $(PYTHON))smpmgr
+APP_NAME  := $(notdir $(COMPILE_DIR))
+SIGNED    := $(BUILD_DIR)/$(APP_NAME)/zephyr/zephyr.signed.bin
 
 # Use a west launcher with git revision compatibility fallbacks
 WEST := $(PYTHON_CMD) tools/west_compat.py
 
 # ============================================================
 .DEFAULT_GOAL := build
-.PHONY: help setup build flash clean build-flash update debug monitor flashmonitor-auto _gen-debug-context
+.PHONY: help setup build flash ota recover clean build-flash update debug monitor flashmonitor-auto _gen-debug-context
 
 help:
 	@echo Usage: make [setup, build, flash, clean, build-flash, update, debug, monitor, flashmonitor-auto] [COMPILE_DIR=...] [BOARD=...]
 	@echo   setup       - Create virtual environment and install dependencies
 	@echo   build       - Build the selected application
-	@echo   flash       - Flash to ESP32C6 DevKitC board
+	@echo   flash       - Flash to ESP32C6 DevKitC board (USB, esptool)
+	@echo   ota         - Update a running MCUboot app over Wi-Fi [HUB_IP=...]
+	@echo   recover     - Rewrite only the app over USB (ROM bootloader) [PORT=...]
 	@echo   clean       - Remove build directory
 	@echo   build-flash - Build then flash
 	@echo   update      - Update Zephyr and dependencies
@@ -63,13 +78,17 @@ help:
 	@echo BOARD=$(BOARD)
 
 # Bootstrap: create venv, install west, init workspace, fetch zephyr, install deps
+# Interpreter used to create the venv; Zephyr needs Python >= 3.10
+# (on Ubuntu 22.04 WSL: make setup HOST_PYTHON=python3.10)
+HOST_PYTHON ?= python
+
 $(VENV_MARKER):
-	python -m venv .venv
+	$(HOST_PYTHON) -m venv $(VENV)
 	$(PYTHON_CMD) -m pip install --upgrade pip
 
 $(DEPS_MARKER): $(VENV_MARKER)
 	$(PYTHON_CMD) -m pip install --upgrade pip
-	$(PYTHON_CMD) -m pip install --upgrade west
+	$(PYTHON_CMD) -m pip install --upgrade west smpmgr
 	$(PYTHON_CMD) -m pip install -r $(ZEPHYR_REQS)
 	$(PYTHON_CMD) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
 
@@ -77,13 +96,31 @@ setup: $(DEPS_MARKER)
 	-$(WEST) init -l manifest-local
 	$(WEST) update --fetch always
 	$(PYTHON_CMD) -m pip install -r $(ZEPHYR_REQS)
+	# Python packages the modules need (e.g. esptool for Espressif), plus imgtool
+	$(WEST) packages pip --install
+	$(PYTHON_CMD) -m pip install imgtool
+	$(WEST) blobs fetch hal_espressif
 	$(PYTHON_CMD) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"
 
 build: $(DEPS_MARKER)
-	$(WEST) build -b $(BOARD) $(COMPILE_DIR) -d $(BUILD_DIR) --pristine=auto
+	$(WEST) build -b $(BOARD) $(COMPILE_DIR) -d $(BUILD_DIR) --pristine=auto $(SYSBUILD)
 
 flash:
-	$(WEST) flash -d $(BUILD_DIR)
+	$(WEST) flash -d $(BUILD_DIR) $(if $(PORT),--esp-device $(PORT),)
+
+# Over the air: upload the signed image to slot 1 of the running hub, mark it
+# for a trial boot (by its hash) and reset. MCUboot swaps it in; the new
+# firmware confirms itself once online, otherwise MCUboot rolls back.
+ota:
+	$(SMPMGR) --ip $(HUB_IP) --timeout 10 image upload $(SIGNED)
+	$(SMPMGR) --ip $(HUB_IP) --timeout 10 image state-write $$(sh tools/image_hash.sh $(dir $(PYTHON))imgtool $(SIGNED))
+	$(SMPMGR) --ip $(HUB_IP) --timeout 10 os reset
+
+# Over USB: write only the signed application into slot 0 (0x20000) through
+# the ESP32-C6 ROM bootloader; MCUboot and its settings stay untouched.
+SLOT0_ADDR ?= 0x20000
+recover:
+	$(dir $(PYTHON))esptool --port $(PORT) write-flash $(SLOT0_ADDR) $(SIGNED)
 
 clean:
 ifeq ($(OS),Windows_NT)
@@ -95,7 +132,7 @@ endif
 
 update:
 	$(PYTHON_CMD) -m pip install --upgrade pip
-	$(PYTHON_CMD) -m pip install --upgrade west
+	$(PYTHON_CMD) -m pip install --upgrade west smpmgr
 	$(WEST) update --fetch always
 	$(PYTHON_CMD) -m pip install -r $(ZEPHYR_REQS)
 	$(PYTHON_CMD) -c "from pathlib import Path; Path('$(DEPS_MARKER)').touch()"

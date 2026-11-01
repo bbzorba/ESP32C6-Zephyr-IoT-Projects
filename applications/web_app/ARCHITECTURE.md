@@ -60,6 +60,7 @@ flowchart LR
 | `lan_scan_tid` | when the sampler (or "Scan now") asks | ~35 s ARP sweep of the /24, then PTR lookups for names |
 | HTTP server (Zephyr) | on incoming requests | dashboard, JSON API, node reports |
 | Wi-Fi work item | on connect timeouts | retries every 30 s, reboots after 5 min offline |
+| mcumgr UDP (Zephyr) | on packets to UDP 1337 | receives firmware updates (see [BOOTLOADER.md](BOOTLOADER.md)) |
 
 The sampler is the only periodic timer, so sensor reads, the MQTT publish
 and (every 10 minutes) the scan start all happen in the same wake-up.
@@ -151,6 +152,12 @@ sequenceDiagram
         R-->>L: hostname (if the device sent one via DHCP)
     end
 ```
+
+## Firmware updates
+
+The hub boots through MCUboot and is updated over Wi-Fi (`make ota`) with
+automatic rollback, or over USB as a fallback. How it works, where the old
+and new images live, and how to test it: [BOOTLOADER.md](BOOTLOADER.md).
 
 ## Adding a new node
 

@@ -82,6 +82,12 @@ void ota_log_boot(void);
 const char *ota_version(void);
 bool ota_confirmed(void);
 
+/* --- bl_update.c: bootloader self-update from slot 1 --- */
+/* Installs a signed bootloader staged in slot 1, if there is one. */
+void bl_update_check(void);
+/* "none", "installed <sha>", "rejected" or "failed, retrying" */
+const char *bl_update_result(void);
+
 /* --- mqtt_pub.c: readings to the MQTT broker for the live web page --- */
 /* Called on each sampler tick; the publish happens in the MQTT thread. */
 void mqtt_pub_trigger(void);

@@ -1,145 +1,148 @@
 # Bootloader design
 
-How the Home Hub (ESP32-C6, Zephyr) boots and updates itself, and why it's
-built this way. For the overall system see [ARCHITECTURE.md](ARCHITECTURE.md).
+How the Home Hub (ESP32-C6, Zephyr) boots and updates its application and
+its bootloader. Firmware structure: [ARCHITECTURE.md](ARCHITECTURE.md).
+Commands to build, update and test: [README.md](README.md).
 
-## 1. How an ESP32-C6 normally boots
-
-```mermaid
-flowchart LR
-    ROM["ROM bootloader<br/>(mask ROM, fixed)"] --> APP["Application<br/>(one copy in flash)"]
-```
-
-Out of the box, a Zephyr app on the ESP32-C6 is loaded directly by the
-ROM bootloader. There is exactly one copy of the firmware: updating it
-means overwriting it over USB, and a bad image stays bad.
-
-## 2. What we built
+## 1. Boot chain and flash
 
 ```mermaid
 flowchart LR
     subgraph CHIP["ESP32-C6"]
-        ROM["ROM bootloader<br/>USB download mode"]
-        subgraph FLASH["8 MB flash"]
-            MB["MCUboot<br/>0x000000"]
-            S0["Slot 0: running app<br/>0x020000"]
-            S1["Slot 1: incoming update<br/>0x1E0000"]
+        ROM["Mask ROM<br/>1st stage, fixed"]
+        subgraph FLASH["8 MB SPI NOR flash, 4 KB sectors"]
+            MB["0x000000 MCUboot<br/>2nd stage, 64 KB"]
+            S0["0x020000 slot 0<br/>running app, 1.75 MB"]
+            S1["0x1E0000 slot 1<br/>staging, 1.75 MB"]
         end
-        ROM --> MB --> S0
-        S0 -. "mcumgr writes update" .-> S1
+        SRAM["HP SRAM"]
+        ROM -- "always loads from 0x0" --> MB
+        MB -- "copied to SRAM, runs" --> SRAM
+        MB -- "maps slot 0 through the<br/>cache (XIP), jumps" --> S0
     end
-    PC["PC (WSL)<br/>make ota / flash / recover"]
-    PC -- "Wi-Fi, UDP 1337<br/>(mcumgr)" --> S0
-    PC -- "USB-UART + esptool" --> ROM
+    PC["PC (WSL)"] -- "Wi-Fi: mcumgr, UDP 1337" --> S0
+    PC -- "USB-UART: esptool" --> ROM
 ```
 
-| Component | Where | Job |
+| Stage | Where | Job |
 |---|---|---|
-| ROM bootloader | inside the chip, unchangeable | Starts MCUboot; offers USB download mode for esptool |
-| **MCUboot** | flash 0x000000 | Checks the update's signature, swaps images, rolls back |
-| Slot 0 | flash 0x020000 (1.75 MB) | The firmware that runs |
-| Slot 1 | flash 0x1E0000 (1.75 MB) | Where a new image is uploaded; afterwards holds the previous one |
-| mcumgr (in the app) | Zephyr subsystem | Receives images over Wi-Fi, marks them for test, resets |
-| `ota.c` (in the app) | our code | Confirms the running image once the hub is online |
-| Signing key | `keys/`, not in git | Signs every image; MCUboot only accepts our signature |
+| ROM bootloader | mask ROM | Loads the image at flash **0x0** into SRAM; with GPIO9 low at reset: USB/UART download mode (esptool) |
+| MCUboot | flash 0x0, 64 KB | Checks signatures, swaps slot 0/1, rolls back, starts slot 0 |
+| Application | slot 0 | The hub; receives updates into slot 1 (mcumgr) and confirms itself |
 
-## 3. Where the old and new firmware live during an update
+The flash is one external SPI NOR array. There are no banks: code runs
+from it through the cache, and during each erase or program operation
+Zephyr's flash driver suspends the cache and runs from internal RAM. The
+application keeps running between operations.
 
-MCUboot uses **swap using move**: both images are always kept, so it can
-switch back.
+## 2. Application update (`make ota`)
+
+MCUboot runs in **swap using move** mode, so the old and the new image are
+both kept.
 
 | Moment | Slot 0 (runs) | Slot 1 |
 |---|---|---|
-| Before | old v1.1.0 | empty / outdated |
-| After upload | old v1.1.0 | **new v1.1.1** (marked "test") |
-| After the swap at reset | **new v1.1.1** (trial) | old v1.1.0 |
-| New firmware gets online | new v1.1.1 (**confirmed**) | old v1.1.0 (kept as backup) |
-| …or it never confirms | old v1.1.0 (swapped back) | new v1.1.1 |
-
-The swap copies sector by sector and records its progress at the end of
-the slots (the "trailer"), so a power cut in the middle is resumed at the
-next boot rather than leaving a half-written image.
-
-## 4. Rollback: what happens at every reset
+| Before | old v1 | empty / outdated |
+| After upload | old v1 | **new v2**, marked "test" |
+| Reset: MCUboot verifies the signature, swaps | **new v2** (trial) | old v1 |
+| v2 gets online → `ota.c` confirms (`image_ok`) | v2, confirmed | old v1, kept |
+| …or v2 resets before that | old v1 (swapped back) | v2 |
 
 ```mermaid
 flowchart TD
-    R([Reset]) --> ROM{"ROM: BOOT pin<br/>held low?"}
-    ROM -- yes --> DL["USB download mode<br/>(esptool)"]
-    ROM -- no --> MB["MCUboot starts"]
+    R([Reset]) --> ROM{"ROM: GPIO9<br/>low?"}
+    ROM -- yes --> DL["Download mode<br/>(esptool)"]
+    ROM -- no --> MB["MCUboot"]
     MB --> P{"Slot 1 marked<br/>'test'?"}
     P -- yes --> SIG{"Signature<br/>valid?"}
-    SIG -- no --> KEEP["Ignore update"]
+    SIG -- no --> RUN
     SIG -- yes --> SWAP["Swap: new image to slot 0<br/>(trial boot)"]
     P -- no --> T{"Last boot was a trial<br/>that never confirmed?"}
     T -- yes --> REV["Swap back:<br/>old image to slot 0"]
     T -- no --> RUN
-    KEEP --> RUN
     SWAP --> RUN
     REV --> RUN["Run slot 0"]
-    RUN --> ON{"Online within<br/>5 min?"}
-    ON -- yes --> OK["ota.c confirms the image<br/>(sets image_ok in the trailer)"]
+    RUN --> ON{"Online before a<br/>Wi-Fi reboot?"}
+    ON -- yes --> OK["ota.c confirms the image"]
     ON -- no --> WD["Wi-Fi watchdog reboots"] --> R
 ```
 
-The rule is simple: **a new image must prove itself by reaching the network;
-if it resets before that, MCUboot restores the previous one.** "Confirmed"
-is one flag (`image_ok`) in the slot trailer, written by
-`boot_write_img_confirmed()` in `src/ota.c` when Wi-Fi and IP are up.
-
-## 5. Who resets the chip, and how
+**A new image must prove itself by reaching the network; if it resets
+before that, MCUboot restores the previous one.** The swap records its
+progress in the slot trailers, so a power cut mid-swap resumes at the next
+boot.
 
 | Reset | Triggered by | Result |
 |---|---|---|
-| After an OTA upload | `make ota` sends mcumgr `os reset` → `sys_reboot()` | MCUboot swaps in the new image |
-| Wi-Fi watchdog | `src/wifi.c`: offline for 5 min → `sys_reboot()` | Reboot; also reverts an unconfirmed trial |
-| USB flashing | esptool toggles the USB-UART's **DTR/RTS** lines, which the DevKit wires to **EN** (reset) and **GPIO9** (BOOT) | GPIO9 low during reset → ROM download mode |
-| Manual | RESET button (hold BOOT too for download mode) | Normal boot / download mode |
+| After an upload | mcumgr `os reset` → `sys_reboot()` | MCUboot swaps the new image in |
+| Wi-Fi recovery | `wifi.c`: driver stuck 60 s, or 5 min offline → `sys_reboot()` | Reboot; reverts an unconfirmed trial |
+| USB flashing | esptool drives DTR/RTS → EN and GPIO9 | ROM download mode |
 
-## 6. Crucial points
+## 3. Bootloader update (`make ota-bootloader`)
 
-- **Signed updates only.** OTA images are checked against our ECDSA P-256
-  key before anything is swapped. Lose the key and OTA stops working until a
-  USB reinstall with a new key: back it up.
-- **USB is always the safety net.** The ROM bootloader can't be erased, so
-  even a broken MCUboot is recoverable with `make flash`.
-- **Two Zephyr 4.3 quirks we worked around** (`sysbuild/mcuboot.conf`):
-  Espressif's MCUboot settings for the C6 were silently skipped (file name
-  mismatch), which broke the link, so we apply them ourselves; and MCUboot's
-  own USB "serial recovery" doesn't build for Espressif, so USB recovery
-  uses the ROM bootloader instead.
-- **Confirm late, not early.** Confirming only after the network is up
-  guarantees that a kept image can always receive the next update.
+The same idea as the STM32H7/PX4 bootloader updater: stage the new
+bootloader high in the application area, verify it, copy it to the boot
+sector, verify the copy, and let the flash contents tell whether it is
+finished. What the ESP32-C6 changes:
 
-## 7. How to test it
+| | STM32H7 (PX4) | ESP32-C6 (this hub) |
+|---|---|---|
+| Flash | internal, 2 banks, 128 KB sectors | external SPI NOR, 1 array, 4 KB sectors |
+| Where the CPU starts | BOOT_ADD0/1 option bytes | ROM, always from flash **0x0** |
+| Point boot away during the update | yes, BOOT_ADD0 → updater (atomic OPTSTRT) | **not possible**: no such register; the ROM's recovery-bootloader eFuse exists only on C5/C61/P4 |
+| Updater | separate bootloader_updater app | `bl_update.c` inside the running, confirmed app |
+| Code while writing | runs from the other bank | runs from internal RAM during each flash operation (driver) |
+| Staging | bank 2, sectors 8–14 | slot 1 (0x1E0000) |
+| Check before/after | CRC of image / CRC of sector 0 | SHA-256 + ECDSA P-256 signature / SHA-256 read-back of 0x0 |
+| Resume state | option bytes | flash: staged image in slot 1 vs. the sectors at 0x0 |
+| If it goes wrong anyway | system ROM bootloader (BOOT0 pin, DFU) | ROM download mode over USB (GPIO9) |
 
-From WSL in the repo root, with the board's USB attached to WSL
-(`usbipd attach --wsl --busid 2-10`, after `wsl -u root -- modprobe vhci_hcd`):
-
-```bash
-# 1. Full install over USB (first time, or after MCUboot changes)
-make build
-make flash PORT=/dev/ttyUSB0
-
-# 2. OTA: bump PATCHLEVEL in applications/web_app/VERSION, then
-make build
-make ota                      # HUB_IP=192.168.178.172 by default
-#    → waits (up to 6 min) until the hub answers, uploads, resets, and
-#      returns once the hub runs the new image and has confirmed it
-
-# 3. USB rewrite of the app only (e.g. if it can't reach Wi-Fi)
-make recover PORT=/dev/ttyUSB0
+```mermaid
+flowchart TD
+    A["PC: imgtool signs MCUboot's binary<br/>(header + SHA-256 + ECDSA TLVs)"] --> B["mcumgr upload to slot 1,<br/>NOT marked for test"]
+    B --> C["Reset: old MCUboot ignores slot 1,<br/>boots the app as usual"]
+    C --> D{"App online and<br/>confirmed?"}
+    D -- no --> C
+    D -- yes --> E{"Slot 1 holds a signed image<br/>whose payload is an ESP bootloader?"}
+    E -- no --> Z([Nothing to do])
+    E -- yes --> F{"SHA-256 and<br/>signature valid?"}
+    F -- no --> X(["Rejected, 0x0 untouched"])
+    F -- yes --> G["For each 4 KB sector:<br/>same as staged? skip<br/>else erase + program"]
+    G --> H{"SHA-256 of 0x0 ==<br/>SHA-256 of staged payload?"}
+    H -- no --> C
+    H -- yes --> I["Erase slot 1 header: done"]
+    I --> J["Reset: ROM loads the new MCUboot,<br/>which boots the app"]
 ```
 
-To see a rollback, upload an image and reset the hub before it gets
-online (e.g. switch off the router, or press RESET within a few seconds of
-the update): the serial log shows `Swap type: revert` and the previous
-version comes back.
+**Power cut or reset during the update:**
 
-`make ota` only works while the hub is on Wi-Fi. Right after a reset or a
-USB flash it can take up to 5 minutes to rejoin (the Wi-Fi driver sometimes
-hangs and the watchdog reboots it); `make ota` waits for that, and says so
-if the hub never answers.
+| When | What happens |
+|---|---|
+| Before the first sector is written | Nothing changed; the staged image stays and is installed at the next check |
+| While sectors are written (≤ 0.5 s) | 0x0 holds a half-written image; the ROM rejects it and the hub stays off until `make flash` over USB |
+| After the read-back matched | Done; slot 1 may still hold the image, the next check finds 0x0 identical and only erases slot 1 |
 
-Tested on the board (Nov 2026): USB install, OTA 1.1.0 → 1.1.1 in 22 s,
-rollback after an unconfirmed trial boot, and USB app rewrite.
+The middle row is the price of the C6 having no BOOT_ADD: nothing can
+redirect the ROM while 0x0 is incomplete. The window is kept short by
+writing only the sectors that differ: measured 25–45 ms per 4 KB sector,
+so ≤ 0.5 s for all 12 sectors of a ~47 KB MCUboot.
+
+**Order of updates:** install the bootloader first, application later.
+Uploading an application overwrites slot 1, i.e. the staged bootloader,
+just as uploading PX4 wipes the STM32 updater.
+
+## 4. Crucial points
+
+- **Everything is signed with one ECDSA P-256 key.** MCUboot checks
+  applications; `bl_update.c` checks bootloaders against the public half,
+  compiled in from the same key. Lose the key and only USB updates remain:
+  back it up.
+- **USB is always the safety net.** The ROM can't be erased, so even a
+  broken MCUboot is recoverable with `make flash`.
+- **Confirm late, not early.** Only a confirmed image that is online can
+  touch the bootloader, and it confirms only once it can receive the next
+  update.
+- **Two Zephyr 4.3 quirks** (`sysbuild/mcuboot.conf`): Espressif's MCUboot
+  settings for the C6 are skipped because of a file-name mismatch, so we
+  apply them ourselves; MCUboot's own serial recovery doesn't build for
+  Espressif, so USB recovery uses the ROM instead.

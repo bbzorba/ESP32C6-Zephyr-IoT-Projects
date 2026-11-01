@@ -1,41 +1,89 @@
-# Home Hub (web_app)
+# Home Hub (web_app) – developer manual
 
 ESP32-C6 + Zephyr. Joins the home Wi-Fi, serves a dashboard on port 80,
-reads a BME688 and keeps a named list of every device on the LAN.
+reads a BME688, keeps a named list of every device on the LAN, collects
+reports from client nodes and publishes everything over MQTT.
 
-For how the hub, client nodes, MQTT broker and the website fit together
-(block and sequence diagrams, adding nodes), see
-[ARCHITECTURE.md](ARCHITECTURE.md). For the bootloader and updates over
-USB and Wi-Fi, see [BOOTLOADER.md](BOOTLOADER.md).
+| Document | Content |
+|---|---|
+| this README | set up, build, flash, update, test, interfaces |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | firmware architecture: memory, threads, modules, timing |
+| [BOOTLOADER.md](BOOTLOADER.md) | boot chain, application and bootloader updates, rollback |
 
-## Setup (WSL / Linux)
+## 1. Setup (WSL / Linux, once per machine)
 
-Everything builds and flashes from WSL (Ubuntu 22.04), from the workspace
-root:
+From the workspace root:
 
-1. Once per machine: the [Zephyr SDK](https://github.com/zephyrproject-rtos/sdk-ng/releases)
-   0.17.3 with the `riscv64-zephyr-elf` toolchain, and the Python venv:
-   `make setup HOST_PYTHON=python3.10` (creates `.venv-wsl`; Zephyr needs
-   Python ≥ 3.10). Wi-Fi also needs Espressif's blobs once:
-   `.venv-wsl/bin/west blobs fetch hal_espressif`.
-2. Copy `wifi.conf.example` to `wifi.conf` and fill in SSID and password
-   (`wifi.conf` is git-ignored).
-3. Create the firmware signing key once and back it up (see BOOTLOADER.md):
+1. [Zephyr SDK](https://github.com/zephyrproject-rtos/sdk-ng/releases) 0.17.3
+   with the `riscv64-zephyr-elf` toolchain.
+2. `make setup HOST_PYTHON=python3.10` – creates `.venv-wsl` (Zephyr needs
+   Python ≥ 3.10), fetches Zephyr, esptool, imgtool, smpmgr and the
+   Espressif Wi-Fi blobs. The Makefile uses the venv's tools without
+   activating it.
+3. `cp applications/web_app/wifi.conf.example applications/web_app/wifi.conf`
+   and fill in SSID and password (git-ignored).
+4. Signing key, once, then **back it up** (git-ignored; without it only USB
+   updates work):
    `.venv-wsl/bin/imgtool keygen -k applications/web_app/keys/hub-signing-key.pem -t ecdsa-p256`
-4. Give WSL the board's USB-UART (admin PowerShell, `bind` only once):
-   `usbipd bind --busid <id>` then `usbipd attach --wsl --busid <id>`;
-   it appears as `/dev/ttyUSB0`.
-5. Build and flash:
+5. Board USB into WSL (admin PowerShell; `bind` only once):
+   `usbipd bind --busid <id>`, then `wsl -u root -- modprobe vhci_hcd` and
+   `usbipd attach --wsl --busid <id>` → `/dev/ttyUSB0`.
 
-   ```bash
-   make build                       # sysbuild: MCUboot + signed application
-   make flash PORT=/dev/ttyUSB0     # first install over USB
-   make ota                         # later updates over Wi-Fi
-   ```
+## 2. Build, flash, update
 
-6. The serial log prints `Online: http://<ip>/`. Open that address.
+```bash
+make build                          # MCUboot + signed app (sysbuild)
+make flash PORT=/dev/ttyUSB0        # USB: MCUboot at 0x0 + app at 0x20000
+make ota                            # Wi-Fi: application
+make ota-bootloader                 # Wi-Fi: MCUboot itself
+make recover PORT=/dev/ttyUSB0      # USB: application only, MCUboot untouched
+```
 
-## BME688 wiring (I2C0)
+`HUB_IP=…` overrides the hub address (default `192.168.178.172`).
+
+- **Application:** bump `VERSION`, `make build`, `make ota`. Waits until
+  the hub answers (up to 6 min), uploads, resets and returns once the hub
+  runs the new image and has confirmed it.
+- **Bootloader:** change MCUboot (`sysbuild/mcuboot.conf`, or a new
+  Zephyr/MCUboot), `make build`, then **`make ota-bootloader` first** and
+  `make ota` afterwards if the app changed too (an app upload overwrites
+  the staged bootloader). It returns once the hub has installed and
+  verified the new MCUboot and booted through it. Don't cut power during
+  the ≤ 0.5 s write, see BOOTLOADER.md §3.
+- `/api/status` shows `fw` (version), `fw_confirmed` and `bl` (result of
+  the last bootloader update since boot: `none`, `installed <sha>`,
+  `rejected`, `failed, retrying`).
+
+## 3. Standalone operation
+
+Once flashed, the hub needs only 5 V (any USB power supply) and Wi-Fi:
+every later update of the application and the bootloader goes over Wi-Fi.
+Keep a USB cable for the rare cases the hub can't recover by itself: a
+power cut during a bootloader write, or a firmware that never reaches the
+network twice in a row.
+
+After power-up the hub is online in ~10 s, or under 2 min when the Wi-Fi
+driver hangs after the power-on (the hub detects that and reboots itself);
+`make ota` waits for that.
+
+## 4. Testing
+
+| Test | How | Expected |
+|---|---|---|
+| USB install | `make build && make flash PORT=/dev/ttyUSB0` | serial log `Online: http://<ip>/` |
+| OTA | bump `PATCHLEVEL`, `make build && make ota` | `ota: done…`; dashboard shows the new version |
+| Rollback | `make ota`, then press RESET within ~5 s of the hub restarting (before it is online) | serial `Swap type: revert`; previous version, confirmed |
+| Unreachable hub | `make ota HUB_IP=192.168.178.250 OTA_WAIT_S=15` | one-line error after 15 s |
+| Bootloader OTA | `make ota-bootloader` | `ota: done, the hub boots through the new bootloader`; `bl` = `installed …` |
+| Bootloader verify | `.venv-wsl/bin/esptool --port /dev/ttyUSB0 read-flash 0x0 <size> bl.bin`, `cmp` with `build/mcuboot/zephyr/zephyr.bin` | identical |
+| Bad bootloader | stage an image signed with another key | `bl` = `rejected`, 0x0 untouched |
+| App-only USB | `make recover PORT=/dev/ttyUSB0` | app boots through the existing MCUboot |
+| Power-on | unplug and replug the hub (or open `/dev/ttyUSB0`, which resets it) | online within 2 min, also when the Wi-Fi driver hangs (`Driver stuck connecting, rebooting`) |
+
+Serial log: `make monitor PORT=/dev/ttyUSB0` (Ctrl+] quits). Opening the port
+resets the board.
+
+## 5. BME688 wiring (I2C0)
 
 | BME688 breakout | ESP32-C6-DevKitC |
 |---|---|
@@ -43,103 +91,61 @@ root:
 | GND | GND |
 | SDA / SDI | GPIO6 |
 | SCL / SCK | GPIO7 |
-| SDO | GND for address 0x76, 3V3 for 0x77 (or leave as the breakout sets it) |
-| CS | 3V3 (selects I2C; most breakouts already pull it up) |
+| SDO | GND → 0x76, 3V3 → 0x77 (both are in the overlay) |
+| CS | 3V3 (selects I2C) |
 
-Use 3.3 V, never 5 V on a bare BME688. Both addresses are in the overlay, so
-either works. The sensor is detected at boot: after wiring it, press RESET.
+3.3 V only. The sensor is detected at boot: after wiring it, press RESET.
+Gas resistance isn't shown: Zephyr's `bosch,bme680` driver uses the
+BME680's gas registers and formula, which are wrong for the BME688.
 
-**Gas resistance is not shown.** Zephyr's `bosch,bme680` driver reads
-temperature, humidity and pressure correctly on the BME688, but its gas
-value is wrong there: it uses the BME680's run_gas bit, gas registers
-(0x2A/0x2B) and formula, while the BME688 needs 0x20, 0x2C/0x2D and a
-different formula.
+## 6. Interfaces
 
-## Timing
+**Status LED** (onboard WS2812): blue = connecting, green = online,
+purple = LAN scan running.
 
-One timer in `main.c` wakes the CPU every 10 s. On each tick the chip
-temperature and the BME688 are read together. Every 60th tick (10 min),
-the same tick also starts a LAN scan. "Scan now" runs an extra scan without
-moving that schedule.
-
-## Status LED (onboard RGB)
-
-| Colour | Meaning |
-|---|---|
-| blue | connecting to Wi-Fi |
-| green | online |
-| purple | LAN scan running |
-
-If Wi-Fi stays down for 5 minutes the hub reboots (see `src/wifi.c`).
-
-## HTTP API
+**HTTP (port 80)**
 
 | Method | Path | Returns |
 |---|---|---|
 | GET | `/` | dashboard |
-| GET | `/api/status` | BME688 (`env`), chip temperature, CPU load, Wi-Fi (SSID, RSSI, IP, MAC), scan state |
-| GET | `/api/devices` | LAN devices: name, IP, MAC, online, first/last seen (hub uptime seconds) |
-| POST | `/api/scan` | starts a scan now, `{"started":false}` if one is running |
-| POST | `/api/node` | sensor report from a client node (below) |
-| GET | `/api/nodes` | latest report of every node, with `online` |
+| GET | `/api/status` | firmware, BME688, chip temperature, CPU load, Wi-Fi, scan state |
+| GET | `/api/devices` | LAN devices: name, IP, MAC, online, first/last seen |
+| POST | `/api/scan` | starts a scan now (`{"started":false}` if one is running) |
+| POST | `/api/node` | report from a client node |
+| GET | `/api/nodes` | latest report of every node |
 
-## Client nodes
-
-Other boards report to the hub by POSTing to `/api/node` every 10 s:
+**Client node report** (POST `/api/node` every 10 s, raw UTF-8):
 
 ```json
 {"id":"imx8mpevk","model":"NXP FRDM-IMX8MPLUS",
  "sensors":[{"name":"CPU temperature","value":46.0,"unit":"°C"}]}
 ```
 
-Up to 4 nodes and 16 sensors per node (name ≤ 23 bytes, unit ≤ 7 bytes).
-Send raw UTF-8: Zephyr's JSON parser keeps `\uXXXX` escapes literally. A
-node shows as offline after 30 s without a report. Each node gets its own
-card on the dashboard. The i.MX 8M Plus client lives in
-[NXP-imx8MPlus-applications](https://github.com/bbzorba/NXP-imx8MPlus-applications)
-(`home_hub_node`).
+Up to 4 nodes × 16 sensors (name ≤ 23 bytes, unit ≤ 7). A new node needs
+no change on the hub or the website. Example client:
+[NXP-imx8MPlus-applications](https://github.com/bbzorba/NXP-imx8MPlus-applications) (`home_hub_node`).
 
-## Live page on bbzorba.github.io (MQTT)
-
-On every 10 s tick the hub also publishes to an MQTT broker
-(`src/mqtt_pub.c`); https://bbzorba.github.io/live subscribes over
-WebSocket from the visitor's browser.
+**MQTT** (`broker.hivemq.com:1883`, both retained; Kconfig `CONFIG_APP_MQTT_*`)
 
 | Topic | Content |
 |---|---|
-| `bbzorba/home-hub/v1/state` | JSON: hub (chip temperature, CPU load, uptime, RSSI), BME688, all client nodes |
-| `bbzorba/home-hub/v1/status` | `online`; the broker sets `offline` (last will) ~90 s after the hub drops off |
+| `bbzorba/home-hub/v1/state` | hub, BME688, all nodes (JSON), every 10 s |
+| `bbzorba/home-hub/v1/status` | `online`; last will `offline` |
 
-Both are retained, so a new visitor sees the latest values at once. Broker,
-port and topic prefix are Kconfig options (`CONFIG_APP_MQTT_*`).
+**mcumgr**: UDP 1337, groups OS and image (no authentication; LAN only).
 
-Only sensor values are published; the LAN device list, addresses and Wi-Fi
-name stay on the local page. The default broker (`broker.hivemq.com`) is
-public: anyone who knows the topic can read it and could publish fake
-values. For that, move to a private broker (e.g. HiveMQ Cloud free tier)
-with a write password for the hub and a read-only user for the page.
+## 7. Source files
 
-## How the LAN scan works
-
-Every host of the hub's /24 gets one 1-byte UDP datagram to port 9. That
-forces an ARP request, and every device answers ARP even if it ignores ping.
-After each batch of 16 hosts the ARP table is read back. A full /24 takes
-about 35 s. Devices that stop answering stay in the list as offline.
-
-Names come from a reverse-DNS (PTR) query to the router, which knows the
-hostname each device sent when it asked for its address. Devices that send
-no hostname show as "unknown".
-
-Phones in deep sleep can miss a scan and show offline for one round.
-
-## Files
-
-- `src/main.c` - start-up, 10 s sampler tick, status LED
-- `src/wifi.c` - Wi-Fi station (wifi_credentials + conn_mgr), recovery
-- `src/lan_scan.c` - ARP sweep, reverse-DNS names, device list
-- `src/sensors.c` - caches all readings; chip temperature
-- `src/bme688.c` - BME688 temperature, humidity, pressure (I2C0)
-- `src/nodes.c` - client node reports
-- `src/mqtt_pub.c` - publishes readings for the live web page
-- `src/web_api.c` - HTTP server, JSON API (Zephyr JSON library)
-- `src/static_web_resources/index.html` - dashboard (gzipped into flash at build time)
+| File | Job |
+|---|---|
+| `src/main.c` | start-up, 10 s sampler tick, status LED |
+| `src/wifi.c` | Wi-Fi station, reconnect, offline watchdog |
+| `src/sensors.c`, `src/bme688.c` | chip temperature, CPU load, BME688 |
+| `src/lan_scan.c` | ARP sweep + reverse DNS |
+| `src/nodes.c` | client node reports |
+| `src/web_api.c` | HTTP server, JSON API |
+| `src/mqtt_pub.c` | MQTT publisher |
+| `src/ota.c` | confirms the running image |
+| `src/bl_update.c` | installs a staged bootloader |
+| `src/static_web_resources/index.html` | dashboard (gzipped into flash) |
+| `sysbuild.conf`, `sysbuild/mcuboot.conf` | MCUboot build settings |

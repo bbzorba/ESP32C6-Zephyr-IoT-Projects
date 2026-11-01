@@ -19,6 +19,7 @@ target_sources(app PRIVATE
   src/nodes.c
   src/mqtt_pub.c
   src/ota.c
+  src/bl_update.c
   src/web_api.c
 )
 
@@ -29,6 +30,21 @@ target_include_directories(app PRIVATE ${ZEPHYR_BASE}/subsys/net/l2/ethernet)
 zephyr_linker_sources(SECTIONS sections-rom.ld)
 zephyr_linker_section(NAME http_resource_desc_hub_http_service
                       KVMA RAM_REGION GROUP RODATA_REGION)
+
+# Public key that bl_update.c checks staged bootloaders against, taken from
+# the key that signs the firmware (the private key never enters the image)
+set(SIGNING_KEY ${CMAKE_CURRENT_LIST_DIR}/keys/hub-signing-key.pem)
+set(PUBKEY_DER ${ZEPHYR_BINARY_DIR}/hub-signing-key.pub.der)
+execute_process(
+  COMMAND ${PYTHON_EXECUTABLE} ${ZEPHYR_MCUBOOT_MODULE_DIR}/scripts/imgtool.py
+          getpub -k ${SIGNING_KEY} -e raw -o ${PUBKEY_DER}
+  COMMAND_ERROR_IS_FATAL ANY
+)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SIGNING_KEY})
+generate_inc_file_for_target(app ${PUBKEY_DER}
+  ${ZEPHYR_BINARY_DIR}/include/generated/bl_pubkey.inc)
+# MCUboot's image header and TLV definitions (bootutil/image.h)
+target_link_libraries(app PRIVATE MCUBOOT_BOOTUTIL)
 
 # Web page is gzipped at build time and served from flash
 generate_inc_file_for_target(

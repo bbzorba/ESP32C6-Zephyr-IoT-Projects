@@ -62,7 +62,7 @@ WEST := $(PYTHON_CMD) tools/west_compat.py
 
 # ============================================================
 .DEFAULT_GOAL := build
-.PHONY: help setup build flash ota recover clean build-flash update debug monitor flashmonitor-auto _gen-debug-context
+.PHONY: help setup build flash ota ota-bootloader recover clean build-flash update debug monitor flashmonitor-auto _gen-debug-context
 
 help:
 	@echo Usage: make [setup, build, flash, clean, build-flash, update, debug, monitor, flashmonitor-auto] [COMPILE_DIR=...] [BOARD=...]
@@ -70,6 +70,7 @@ help:
 	@echo   build       - Build the selected application
 	@echo   flash       - Flash to ESP32C6 DevKitC board (USB, esptool)
 	@echo   ota         - Update a running MCUboot app over Wi-Fi [HUB_IP=...]
+	@echo   ota-bootloader - Update MCUboot itself over Wi-Fi [HUB_IP=...]
 	@echo   recover     - Rewrite only the app over USB (ROM bootloader) [PORT=...]
 	@echo   clean       - Remove build directory
 	@echo   build-flash - Build then flash
@@ -119,6 +120,17 @@ flash:
 ota:
 	sh tools/ota.sh $(SMPMGR) $(dir $(PYTHON))imgtool $(HUB_IP) $(SIGNED)
 
+# Bootloader over the air: MCUboot's binary, signed like an application so
+# mcumgr accepts it into slot 1; the running firmware checks the signature
+# and copies it to 0x0 (src/bl_update.c).
+BL_BIN    := $(BUILD_DIR)/mcuboot/zephyr/zephyr.bin
+BL_STAGED := $(BUILD_DIR)/mcuboot/zephyr/zephyr.staged.bin
+SIGN_KEY  := $(COMPILE_DIR)/keys/hub-signing-key.pem
+ota-bootloader:
+	$(dir $(PYTHON))imgtool sign --key $(SIGN_KEY) --header-size 0x20 --pad-header \
+		--align 4 --slot-size 0x1C0000 --version 0.0.0 $(BL_BIN) $(BL_STAGED)
+	sh tools/ota.sh $(SMPMGR) $(dir $(PYTHON))imgtool $(HUB_IP) $(BL_STAGED) bootloader
+
 # Over USB: write only the signed application into slot 0 (0x20000) through
 # the ESP32-C6 ROM bootloader; MCUboot and its settings stay untouched.
 SLOT0_ADDR ?= 0x20000
@@ -149,7 +161,7 @@ ifeq ($(OS),Windows_NT)
 	powershell -NoProfile -ExecutionPolicy Bypass -File "tools/monitor.ps1" $(if $(PORT),-ComPort $(PORT),) -Baud $(BAUD) $(if $(MONITOR_SECONDS),-DurationSec $(MONITOR_SECONDS),)
 else
 	@echo ">>> Opening serial monitor..."
-	$(PYTHON) -m minicom -D /dev/ttyUSB0 -b 115200
+	$(PYTHON) -m serial.tools.miniterm $(or $(PORT),/dev/ttyUSB0) $(BAUD)
 endif
 
 build-flash: build flash

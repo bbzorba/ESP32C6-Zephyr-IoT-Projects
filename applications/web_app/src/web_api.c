@@ -74,6 +74,7 @@ struct status_json {
 	uint32_t now;
 	char fw[16];
 	bool fw_confirmed;
+	char bl[24];
 	bool chip_ok;
 	double chip_temp_c;
 	double cpu_load_pct;
@@ -114,6 +115,7 @@ static const struct json_obj_descr status_descr[] = {
 	JSON_OBJ_DESCR_PRIM(struct status_json, now, JSON_TOK_UINT),
 	JSON_OBJ_DESCR_PRIM(struct status_json, fw, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct status_json, fw_confirmed, JSON_TOK_TRUE),
+	JSON_OBJ_DESCR_PRIM(struct status_json, bl, JSON_TOK_STRING_BUF),
 	JSON_OBJ_DESCR_PRIM(struct status_json, chip_ok, JSON_TOK_TRUE),
 	JSON_OBJ_DESCR_PRIM(struct status_json, chip_temp_c, JSON_TOK_DOUBLE_FP),
 	JSON_OBJ_DESCR_PRIM(struct status_json, cpu_load_pct, JSON_TOK_DOUBLE_FP),
@@ -165,6 +167,7 @@ static void fill_status(void)
 	status.now = k_uptime_seconds();
 	strncpy(status.fw, ota_version(), sizeof(status.fw) - 1);
 	status.fw_confirmed = ota_confirmed();
+	strncpy(status.bl, bl_update_result(), sizeof(status.bl) - 1);
 
 	sensors_get(&r);
 	status.chip_ok = r.chip_ok;

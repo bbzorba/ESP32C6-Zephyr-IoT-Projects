@@ -1,192 +1,144 @@
-# Home Hub architecture
+# Home Hub firmware architecture
 
-How the ESP32-C6 Home Hub, its client nodes, the MQTT broker and the Live
-Lab page on [bbzorba.github.io](https://bbzorba.github.io/live) fit
-together. Build, wiring and API details are in [README.md](README.md).
+ESP32-C6 (RISC-V, 160 MHz, 512 KB HP SRAM, 8 MB SPI flash), Zephyr 4.3,
+MCUboot. Boot and update design: [BOOTLOADER.md](BOOTLOADER.md). Build,
+test and interfaces: [README.md](README.md).
 
-## The big picture
-
-The system has two hops with two different patterns:
-
-1. **Nodes → hub: request/response (HTTP).** Each client node POSTs its
-   readings to the hub every 10 s. The hub keeps the latest report per node.
-2. **Hub → browsers: publish/subscribe (MQTT).** Every 10 s the hub publishes
-   one message containing its own readings, the BME688 and *all* nodes. The
-   broker fans it out to every browser that has the Live Lab page open.
-
-Only the hub talks to the broker, so nodes never need internet access, MQTT
-or credentials. Everything a node reports reaches the website automatically.
+## 1. System context
 
 ```mermaid
 flowchart LR
-    subgraph LAN["Home network"]
+    BME["BME688<br/>I2C0"] --> HUB["ESP32-C6 Home Hub"]
+    NODE["Client nodes<br/>(i.MX 8M Plus, …)"] -- "HTTP POST /api/node" --> HUB
+    LAN["LAN browser"] -- "HTTP :80" --> HUB
+    PC["Developer PC"] -- "mcumgr UDP 1337 / USB" --> HUB
+    HUB -- "MQTT :1883" --> BRK[("MQTT broker")]
+    BRK -- "wss" --> WEB["bbzorba.github.io/live"]
+```
+
+The hub is the only node that talks to the internet: nodes report to it
+over the LAN, and it republishes everything in one MQTT message.
+
+## 2. Software layers
+
+```mermaid
+flowchart TB
+    subgraph APP["Application (src/)"]
         direction LR
-        subgraph HUB["ESP32-C6 Home Hub (Zephyr)"]
-            direction TB
-            TICK["main.c<br/>10 s sampler tick"]
-            SENS["sensors.c + bme688.c<br/>cached readings"]
-            NODES["nodes.c<br/>latest report per node"]
-            SCAN["lan_scan.c<br/>ARP sweep + reverse DNS"]
-            WEB["web_api.c<br/>HTTP server :80"]
-            MQTT["mqtt_pub.c<br/>MQTT client"]
-            WIFI["wifi.c<br/>Wi-Fi + recovery"]
-            TICK --> SENS
-            TICK -->|every 60th tick| SCAN
-            TICK -->|trigger| MQTT
-            SENS --> WEB
-            SENS --> MQTT
-            NODES --> WEB
-            NODES --> MQTT
-            SCAN --> WEB
-        end
-        BME["BME688<br/>(I2C0)"] --> SENS
-        IMX["i.MX 8M Plus<br/>home_hub_node"] -->|"POST /api/node"| WEB
-        LANB["Browser on the LAN"] -->|"GET / and /api/*"| WEB
-        ROUTER["Router<br/>DHCP + DNS"]
-        SCAN -.->|PTR queries| ROUTER
-        WIFI -.-> ROUTER
+        MAIN["main.c<br/>sampler tick, LED"] ~~~ SENS["sensors.c<br/>bme688.c"] ~~~ SCAN["lan_scan.c"] ~~~ NODES["nodes.c"]
+        WEBA["web_api.c"] ~~~ MQ["mqtt_pub.c"] ~~~ WIFI["wifi.c"] ~~~ OTA["ota.c<br/>bl_update.c"]
     end
-    MQTT -->|"publish state + status<br/>(TCP 1883)"| BROKER[("MQTT broker<br/>broker.hivemq.com")]
-    BROKER -->|"WebSocket (wss 8884)"| PAGE["bbzorba.github.io/live<br/>visitor's browser"]
-    PAGES["GitHub Pages<br/>static HTML + JS"] -->|serves page| PAGE
+    subgraph SUB["Zephyr subsystems"]
+        direction LR
+        NET["IPv4 / UDP / TCP / ARP<br/>DHCP, DNS, conn_mgr"] ~~~ HTTP["HTTP server<br/>JSON"] ~~~ MQL["MQTT lib"] ~~~ MCU["mcumgr<br/>img + os groups"]
+        SNS["sensor API"] ~~~ FM["flash map<br/>img manager"] ~~~ TLS["mbedTLS<br/>SHA-256, ECDSA"] ~~~ LOGS["logging"]
+    end
+    subgraph DRV["Drivers / HAL"]
+        direction LR
+        WDRV["esp32 Wi-Fi L2<br/>+ Espressif blob"] ~~~ FL["flash_esp32<br/>(SPI NOR)"] ~~~ I2C["i2c_esp32"] ~~~ I2S["ws2812-i2s<br/>+ GDMA"] ~~~ TEMP["die temp sensor"]
+    end
+    KERNEL["Zephyr kernel: threads, timers, work queues, mutex/sem"]
+    APP --> SUB --> DRV
+    APP & SUB & DRV --- KERNEL
 ```
 
-## Inside the hub
+## 3. Memory
 
-| Thread / context | Wakes up | Does |
+**Flash (8 MB, executed in place through the cache/MMU):**
+
+| Offset | Size | Partition | Content |
+|---|---|---|---|
+| 0x000000 | 64 KB | `boot_partition` | MCUboot (loaded to SRAM by the ROM) |
+| 0x010000 | 64 KB | `sys_partition` | unused |
+| 0x020000 | 1.75 MB | `slot0_partition` | running application (~720 KB used) |
+| 0x1E0000 | 1.75 MB | `slot1_partition` | update staging / previous image |
+| 0x3A0000 | 64 KB | `slot*_lpcore` | unused (LP core) |
+| 0x3B0000 | 192 KB | `storage_partition` | unused |
+| 0x3E0000 | 124 KB | `scratch_partition` | unused in swap-using-move |
+| 0x3FF000 | 4 KB | `coredump_partition` | unused |
+| 0x400000 | 4 MB | – | unused (the 4 MB partition table is used) |
+
+**RAM (HP SRAM):** 291 KB of 425 KB used statically (68 %): 55 KB of IRAM code
+(interrupt handlers and everything that must run while the flash cache is
+off, e.g. the flash driver), data, thread stacks, heaps and network buffers.
+
+Heaps: system heap 32 KB (+ Wi-Fi driver's own), mbedTLS heap 8 KB (only
+used during a bootloader signature check).
+
+## 4. Threads and execution contexts
+
+Zephyr priorities: negative = cooperative (runs until it blocks), 0…14 =
+preemptive, lower number wins; equal-priority preemptive threads share
+the CPU in 20 ms slices.
+
+| Context | Prio | Stack | Wakes on | Work |
+|---|---|---|---|---|
+| ISRs | – | 2 KB (ISR stack) | Wi-Fi, timer, GDMA, UART | hand off to threads |
+| system work queue | −1 coop | 4 KB | `k_work` submits | Wi-Fi reconnect + stuck/offline reboot (`wifi.c`), image confirm + bootloader update (`ota.c`) |
+| net RX (traffic class) | coop | 2 KB | received packets | IP/UDP/TCP/ARP input |
+| net mgmt events | −1 coop | 2 KB | stack events | L4 up/down → `wifi.c` callback |
+| HTTP server | −1 coop | 4 KB | TCP :80 | dashboard + JSON API |
+| Espressif Wi-Fi tasks | ≤ 7 | blob | radio | 802.11, WPA |
+| `main` (sampler) | 0 | 4 KB | `k_timer` every 10 s | read sensors, trigger MQTT, start a scan every 60th tick, LED |
+| mcumgr UDP | 0 | 4 KB | UDP 1337 | image upload to slot 1, state, reset |
+| `mqtt_tid` | 14 | 3 KB | `publish_sem`, keepalive | connect, publish, ping |
+| socket service | 14 | 1.2 KB | DNS replies | DNS resolver sockets |
+| `lan_scan_tid` | 14 | 2 KB | `scan_sem` | ARP sweep (~35 s), PTR lookups |
+| logging | low | 768 B | log messages | UART output |
+| idle | lowest | 512 B | – | CPU idle (`wfi`) |
+
+The application's long-running jobs (MQTT, LAN scan) run at the lowest
+priority, so the network stack and the HTTP server always preempt them.
+
+**Shared data:** `sensors.c`, `nodes.c` and `lan_scan.c` each keep their
+state behind a `k_mutex`; readers (HTTP, MQTT) take a copy under the lock.
+Triggers between threads are binary `k_sem`s (`scan_sem`, `publish_sem`),
+so a trigger while a job runs is merged, not queued.
+
+## 5. Timing
+
+```mermaid
+sequenceDiagram
+    participant T as k_timer (10 s)
+    participant M as main
+    participant S as sensors
+    participant Q as mqtt_tid
+    participant L as lan_scan_tid
+    T->>M: tick
+    M->>S: sensors_sample(): die temp + BME688 (I2C)
+    M->>Q: k_sem_give(publish_sem)
+    Q->>Q: build JSON, MQTT PUBLISH (retain)
+    alt every 60th tick (10 min)
+        M->>L: k_sem_give(scan_sem)
+        L->>L: 16 hosts / 2.1 s batch, then PTR
+    end
+```
+
+One periodic timer for everything keeps the CPU asleep between ticks;
+client node reports and HTTP requests are event-driven.
+
+## 6. Fault handling
+
+| Fault | Detection | Reaction |
 |---|---|---|
-| `main` (sampler) | every 10 s (one `k_timer`) | reads chip temperature and BME688 together, triggers the MQTT publish, starts a LAN scan every 60th tick |
-| `mqtt_tid` | on the sampler's trigger, or when the keepalive is due | connects to the broker, publishes `state`, sends pings |
-| `lan_scan_tid` | when the sampler (or "Scan now") asks | ~35 s ARP sweep of the /24, then PTR lookups for names |
-| HTTP server (Zephyr) | on incoming requests | dashboard, JSON API, node reports |
-| Wi-Fi work item | on connect timeouts | retries every 30 s, reboots after 5 min offline |
-| mcumgr UDP (Zephyr) | on packets to UDP 1337 | receives firmware updates (see [BOOTLOADER.md](BOOTLOADER.md)) |
+| Wi-Fi lost | conn_mgr L4 down | reconnect every 30 s |
+| Wi-Fi driver stuck "connecting" (after power-on) | connecting, no disconnect event for 60 s | `sys_reboot()`; a software reset always clears it |
+| Still offline | 5 min without a connection | `sys_reboot()` |
+| Bad new firmware | not confirmed before the next reset | MCUboot swaps back (BOOTLOADER.md §2) |
+| Hub off / unplugged | MQTT keepalive missed | broker publishes last will `offline` |
+| Client node silent | no report for 30 s | shown offline |
+| Corrupt or foreign bootloader image | SHA-256 / ECDSA check | rejected, 0x0 untouched |
 
-The sampler is the only periodic timer, so sensor reads, the MQTT publish
-and (every 10 minutes) the scan start all happen in the same wake-up.
+## 7. Crucial points
 
-## Sequences
-
-### Every 10 seconds: from sensor to website
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant N as i.MX node
-    participant H as Hub (ESP32-C6)
-    participant B as MQTT broker
-    participant W as Live Lab page (browser)
-
-    W->>B: SUBSCRIBE bbzorba/home-hub/v1/state, /status
-    B-->>W: retained state + status (latest values at once)
-    loop every 10 s on the node
-        N->>H: POST /api/node {id, model, sensors[]}
-        H-->>N: 200 {"ok":true}
-    end
-    loop every 10 s on the hub (sampler tick)
-        H->>H: read die temp + BME688
-        H->>B: PUBLISH state {hub, env, nodes} (retain)
-        B-->>W: state
-        W->>W: render cards, "updated just now"
-    end
-```
-
-### Hub connects, drops off, comes back
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant H as Hub
-    participant B as MQTT broker
-    participant W as Live Lab page
-
-    H->>B: CONNECT (will: status = "offline", retain)
-    B-->>H: CONNACK
-    H->>B: PUBLISH status = "online" (retain)
-    B-->>W: status online → green "Live"
-    Note over H: power or Wi-Fi lost
-    B->>B: no packet for 1.5 × keepalive (~90 s)
-    B-->>W: last will: status offline → "Hub is offline", values greyed
-    Note over H: Wi-Fi back (or reboot after 5 min offline)
-    H->>B: CONNECT, status = "online"
-    B-->>W: status online, fresh state follows
-```
-
-### A node loses the hub
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant N as Node
-    participant H as Hub
-
-    N-xH: POST /api/node (TCP connect fails)
-    Note over N: stop sending
-    loop every 60 s
-        N-xH: TCP connect only
-    end
-    N->>H: TCP connect succeeds
-    Note over N: resume reports every 10 s
-    Note over H: node card shows "offline"<br/>after 30 s without a report
-```
-
-### LAN scan (every 10 minutes or "Scan now")
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant S as Sampler tick
-    participant L as lan_scan thread
-    participant D as Devices on the /24
-    participant R as Router DNS
-
-    S->>L: lan_scan_request() (60th tick)
-    L->>L: clear ARP cache
-    loop 16 hosts per batch, 2.1 s per batch
-        L->>D: 1-byte UDP to port 9 (forces an ARP request)
-        D-->>L: ARP reply (every live host answers)
-        L->>L: read ARP table → mark online
-    end
-    loop every device seen
-        L->>R: PTR x.x.x.x.in-addr.arpa
-        R-->>L: hostname (if the device sent one via DHCP)
-    end
-```
-
-## Firmware updates
-
-The hub boots through MCUboot and is updated over Wi-Fi (`make ota`) with
-automatic rollback, or over USB as a fallback. How it works, where the old
-and new images live, and how to test it: [BOOTLOADER.md](BOOTLOADER.md).
-
-## Adding a new node
-
-Nothing changes on the hub or the website:
-
-1. On the new board, every 10 s, POST JSON to `http://home-hub/api/node`:
-   ```json
-   {"id":"<unique id, e.g. hostname>","model":"<board name>",
-    "sensors":[{"name":"Temperature","value":21.5,"unit":"°C"}]}
-   ```
-   Send raw UTF-8 (Zephyr's JSON parser keeps `\uXXXX` escapes as text).
-2. The hub's local dashboard shows it as a new card; the next MQTT `state`
-   message contains it, so the Live Lab page shows it too.
-
-Limits: 4 nodes, 16 sensors per node, names up to 23 bytes, units up to 7
-bytes (`MAX_NODES`, `MAX_SENSORS` in `src/nodes.c`). A node that stops
-reporting is shown as offline after 30 s; if the table is full, the node
-silent for longest is replaced.
-
-For a node that should bypass the hub and publish to MQTT itself, the Live
-Lab page would need to subscribe to its topic too; the hub-centred design
-avoids that.
-
-## Security notes
-
-- The broker is public: anyone who knows the topic can read the values and
-  could publish fake ones. Only sensor values are published; the LAN device
-  list, IP/MAC addresses and Wi-Fi name stay on the local dashboard. A
-  private broker (e.g. HiveMQ Cloud) with a write password for the hub and a
-  read-only user for the page closes this.
-- The local dashboard and `/api/node` have no authentication; they are only
-  reachable from the LAN.
+- **One wake-up source.** All periodic work hangs off one 10 s `k_timer`;
+  everything else is event-driven, so adding a feature never adds a timer.
+- **Slow work at the lowest priority.** MQTT and the LAN scan (seconds
+  long) run at priority 14; the network stack and HTTP server are
+  cooperative and always get the CPU first.
+- **Flash writes only from the system work queue**, never from network
+  callbacks: confirming an image and installing a bootloader both run
+  there.
+- **The hub must stay reachable to stay updatable.** The Wi-Fi watchdog,
+  late confirmation and the bootloader rule (only a confirmed, online
+  firmware touches 0x0) all serve that.

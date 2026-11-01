@@ -9,6 +9,9 @@
  * the new image can still receive the next update. If it never gets online,
  * the Wi-Fi recovery in wifi.c reboots after 5 minutes and MCUboot restores
  * the previous image.
+ *
+ * A confirmed firmware then installs a bootloader staged in slot 1, if
+ * there is one (bl_update.c).
  */
 
 #include <zephyr/kernel.h>
@@ -26,16 +29,17 @@ static void confirm_work_handler(struct k_work *work)
 
 	ARG_UNUSED(work);
 
-	if (boot_is_img_confirmed()) {
-		return;
-	}
-
-	ret = boot_write_img_confirmed();
-	if (ret) {
-		LOG_ERR("Could not confirm firmware %s (%d)", APP_VERSION_STRING, ret);
-	} else {
+	if (!boot_is_img_confirmed()) {
+		ret = boot_write_img_confirmed();
+		if (ret) {
+			LOG_ERR("Could not confirm firmware %s (%d)", APP_VERSION_STRING, ret);
+			return;
+		}
 		LOG_INF("Firmware %s confirmed, it stays installed", APP_VERSION_STRING);
 	}
+
+	/* Only a confirmed firmware touches the bootloader */
+	bl_update_check();
 }
 
 /* Flash writes don't belong in the network event callback */

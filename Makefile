@@ -112,13 +112,12 @@ build: $(DEPS_MARKER)
 flash:
 	$(WEST) flash -d $(BUILD_DIR) $(if $(PORT),--esp-device $(PORT),)
 
-# Over the air: upload the signed image to slot 1 of the running hub, mark it
+# Over the air: wait for the hub, upload the signed image to slot 1, mark it
 # for a trial boot (by its hash) and reset. MCUboot swaps it in; the new
 # firmware confirms itself once online, otherwise MCUboot rolls back.
+# tools/ota.sh waits until the hub runs and has confirmed the new image.
 ota:
-	$(SMPMGR) --ip $(HUB_IP) --timeout 10 image upload $(SIGNED)
-	$(SMPMGR) --ip $(HUB_IP) --timeout 10 image state-write $$(sh tools/image_hash.sh $(dir $(PYTHON))imgtool $(SIGNED))
-	$(SMPMGR) --ip $(HUB_IP) --timeout 10 os reset
+	sh tools/ota.sh $(SMPMGR) $(dir $(PYTHON))imgtool $(HUB_IP) $(SIGNED)
 
 # Over USB: write only the signed application into slot 0 (0x20000) through
 # the ESP32-C6 ROM bootloader; MCUboot and its settings stay untouched.

@@ -124,7 +124,8 @@ make flash PORT=/dev/ttyUSB0
 # 2. OTA: bump PATCHLEVEL in applications/web_app/VERSION, then
 make build
 make ota                      # HUB_IP=192.168.178.172 by default
-#    → dashboard "Firmware" shows the new version, "(trial)" until confirmed
+#    → waits (up to 6 min) until the hub answers, uploads, resets, and
+#      returns once the hub runs the new image and has confirmed it
 
 # 3. USB rewrite of the app only (e.g. if it can't reach Wi-Fi)
 make recover PORT=/dev/ttyUSB0
@@ -134,6 +135,11 @@ To see a rollback, upload an image and reset the hub before it gets
 online (e.g. switch off the router, or press RESET within a few seconds of
 the update): the serial log shows `Swap type: revert` and the previous
 version comes back.
+
+`make ota` only works while the hub is on Wi-Fi. Right after a reset or a
+USB flash it can take up to 5 minutes to rejoin (the Wi-Fi driver sometimes
+hangs and the watchdog reboots it); `make ota` waits for that, and says so
+if the hub never answers.
 
 Tested on the board (Nov 2026): USB install, OTA 1.1.0 → 1.1.1 in 22 s,
 rollback after an unconfirmed trial boot, and USB app rewrite.

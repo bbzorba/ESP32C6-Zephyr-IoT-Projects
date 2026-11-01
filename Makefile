@@ -40,6 +40,10 @@ else
     PYTHON := $(VENV)/bin/python
 	PYTHON_CMD := $(PYTHON)
     VENV_MARKER := $(VENV)/bin/python
+    # Tools that west and the recipes call by name (esptool, imgtool,
+    # smpmgr) must come from the venv, not from the system: Ubuntu's
+    # /usr/bin/esptool is 2.x and doesn't know the ESP32-C6
+    export PATH := $(CURDIR)/$(VENV)/bin:$(PATH)
 endif
 DEPS_MARKER := $(VENV)/.deps-ready
 
